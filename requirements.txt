@@ -1,0 +1,21 @@
+# PostPilot — Abhängigkeiten
+# Installation:  pip install -r requirements.txt
+
+# --- Kernmodule (zwingend) ---
+PyMuPDF>=1.23        # fitz: PDF rendern + splitten (stamp_splitter)
+pdfplumber>=0.10     # Textlayer lesen (pdf_extract)
+numpy>=1.24          # Farb-/Pixelanalyse der Stempel
+Pillow>=10.0         # Bildverarbeitung + Debug-Bilder
+
+# --- kommt in späteren Modulen ---
+rapidfuzz>=3.0       # Fuzzy-Matching OCR-toleranter Absender (rule_engine)
+PyYAML>=6.0          # config/departments.yaml, settings.yaml
+
+# --- nur Windows (Outlook-Versand) ---
+# Auf Linux/Mac nicht installierbar und NICHT noetig: dort nutzt der Router
+# automatisch das eml-Backend (eml_writer, reine Standardbibliothek).
+pywin32>=306; sys_platform == "win32"   # Outlook-Anbindung (outlook_client)
+
+# --- optional, standardmäßig AUS ---
+# pytesseract>=0.3   # OCR-Fallback; benötigt zusätzlich Tesseract-OCR-Installation.
+#                    # Nur nötig, falls gescannte PDFs keinen Textlayer haben.

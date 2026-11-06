@@ -1,0 +1,59 @@
+# PostPilot — Abteilungs- und Regelkonfiguration (VORLAGE)
+# ========================================================
+# Diese Datei ist im Repo versioniert und enthaelt NUR Platzhalter.
+# Echte Adressen/Signaturen gehoeren in config/departments.local.yaml
+# (per .gitignore ausgeschlossen). Betrieb mit:
+#   python -m postpilot.router <ordner> --only TAX --config config/departments.local.yaml
+#
+# Scoring-Prinzip:
+#   - senders : starkes Signal (Absender passt). Hohe Scores.
+#   - keywords: schwaches Signal. Summiert sich.
+# Pro Brief werden die Scores je Abteilung summiert; hoechster Score gewinnt.
+# Gewinner < fallback.min_score ODER Gleichstand -> UNGEKLAERT (Pruefungsordner).
+
+departments:
+  - name: "TAX"
+    email: "tax@example.com"
+    batch_mode: true
+    subject_template: "TAX Letter"
+    body_template: |
+      Thanks and best regards,
+
+      <Name>
+      <Rolle>
+      <Abteilung>
+    rules:
+      senders:
+        - {pattern: "Finanzamt",   score: 50}
+        - {pattern: "Steuerkasse", score: 40}
+      keywords:
+        - {pattern: "Steuernummer",   score: 10}
+        - {pattern: "Umsatzsteuer",   score: 10}
+        - {pattern: "Aktenzeichen",   score: 5}
+        - {pattern: "Pfändung",       score: 5}
+        - {pattern: "Vollstreckung",  score: 5}
+    # Sub-Routing INNERHALB von TAX anhand der Adresszeile im Brief.
+    # Reihenfolge = Prioritaet. Hoechster Score gewinnt; greift keine Subroute
+    # (oder Gleichstand / unter subroute_min_score) -> Pruefungsordner review/.
+    #
+    # 'pattern' = exaktes Regex-Match (schnell, praezise).
+    # 'fuzzy'   = optionaler, MENSCHENLESBARER Begriff fuer OCR-tolerantes
+    #             rapidfuzz-Matching (faengt "GarnishmenVt", "GarnishmentV AT").
+    #             WICHTIG: niemals das Regex selbst fuzzy-matchen (sonst entsteht
+    #             aus "Garnishm[a-z]{0,3}" das Unsinns-needle "Garnishmaz03").
+    subroute_min_score: 40
+    subroutes:
+      - name: "DETAINTAKE"
+        email: "detaintake@example.com"
+        patterns:
+          - {pattern: "3\\s?P\\s?VAT",  fuzzy: "3P VAT",         score: 50}
+          - {pattern: "Tax\\s?depar",   fuzzy: "Tax department",  score: 50}
+      - name: "GARNISHMENT"
+        email: "garnishment@example.com"
+        patterns:
+          - {pattern: "Garnishm[a-z]{0,3}", fuzzy: "Garnishment", score: 50}
+
+fallback:
+  department: "UNGEKLAERT"
+  email: "mailroom@example.com"
+  min_score: 20

@@ -1,0 +1,51 @@
+# ------------------------------------------------------------------
+# PostPilot — .gitignore
+# ------------------------------------------------------------------
+
+# === DATENSCHUTZ: echte Briefe & abgeleitete Dateien NIE committen ===
+# Gescannte Finanzamt-Briefe enthalten echte personen-/firmenbezogene Daten.
+TAX.pdf
+*.pdf
+work/
+review/
+state/
+debug*.png
+*.debug.png
+
+# Echte Konfiguration mit internen Adressen/Signatur — nur lokal, nie ins Repo.
+config/*.local.yaml
+
+# === Laufzeit-/Arbeitsverzeichnisse ===
+logs/
+*.log
+*.db
+*.sqlite
+*.sqlite3
+
+# === Python ===
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# === Virtuelle Umgebungen ===
+.venv/
+venv/
+env/
+ENV/
+
+# === IDE / OS ===
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# ------------------------------------------------------------------
+# Hinweis: Beispiel-PDFs zum Testen gehoeren NICHT ins Repo.
+# Wer das Projekt nutzt, legt eigene Scans lokal unter work/ ab.
+# ------------------------------------------------------------------
