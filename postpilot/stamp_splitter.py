@@ -159,21 +159,31 @@ def _classify_page(
 
     Returns (is_stamp, ambiguous):
       is_stamp  = True, wenn blau UND rot ueber ihren Schwellen liegen.
-      ambiguous = True NUR, wenn BLAU ueber Schwelle liegt, aber Rot fehlt
-                  (blauer Rahmen ohne lesbares Datum) -> echter Grenzfall.
+      ambiguous = True nur bei einem ECHTEN Grenzfall knapp an der Stempel-
+                  Signatur (siehe unten) -> Review statt Fehlentscheidung.
 
-    Blau ist das Leitsignal: Der Eingangsstempel hat IMMER einen blauen Rahmen.
-    Ein isolierter roter Fleck ohne Blau (z.B. ein rotes Dienstsiegel oder
-    Logo im Briefinhalt) ist KEIN Eingangsstempel -> schlicht "kein Stempel",
-    kein Fehlalarm. Nur "Blau ohne Rot" bleibt unsicher.
+    Der Eingangsstempel hat IMMER BEIDES: blauen Rahmen UND rotes Datum.
+    Das rote Datum ist der zuverlaessige Diskriminator — echte Stempel haben
+    konstant ~0.20 % Rot, waehrend blaue Unterschriften/Dienstsiegel oder rote
+    Siegel im Briefinhalt stets nur EINEN Kanal zeigen (der andere ~0.000 %).
+    Daher: nur EIN Kanal ueber Schwelle = KEIN Stempel (kein Fehlalarm).
+
+    "ambiguous" ist bewusst eng gefasst: nur wenn BEIDE Kanaele im
+    Grenzbereich liegen (blau ueber Schwelle und rot knapp darunter, aber
+    nicht bei null) — dann koennte ein echter Stempel mit blassem Datum
+    vorliegen, den ein Mensch pruefen sollte.
     """
     blue_hit = blue_pct >= cfg.blue_thresh_pct
     red_hit = red_pct >= cfg.red_thresh_pct
     is_stamp = blue_hit and red_hit
-    # Unsicher nur bei blauem Rahmen OHNE rotes Datum. Nur-Rot (kein Blau)
-    # ist kein Eingangsstempel (Dienstsiegel/Logo) -> kein Fehlalarm.
+    # Grenzfall: blauer Rahmen vorhanden, rotes Datum nur KNAPP unter Schwelle
+    # (zwischen ambiguous_factor*Schwelle und Schwelle) -> evtl. echter Stempel
+    # mit blassem Datum, Mensch pruefen lassen. Rot = 0 (Unterschrift/Siegel)
+    # faellt NICHT darunter und gilt sauber als "kein Stempel".
     ambiguous = (
-        blue_hit and not red_hit and red_pct < cfg.red_thresh_pct * cfg.ambiguous_factor
+        blue_hit
+        and not red_hit
+        and red_pct >= cfg.red_thresh_pct * cfg.ambiguous_factor
     )
     # bool() erzwingen: numpy-Vergleiche liefern numpy.bool_ (nicht JSON-serialisierbar).
     return bool(is_stamp), bool(ambiguous)
