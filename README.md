@@ -1,62 +1,58 @@
 # PostPilot
 
-Regelbasierte Briefweiterleitung für die Poststelle. Überwacht einen
-Outlook-Ordner, analysiert gescannte PDF-Briefe und leitet sie an die
-zuständige Abteilung weiter – deterministisch, lokal, nachvollziehbar.
+Every day the mailroom gets a pile of scanned letters that need to go to the
+right department. PostPilot does that for me: it pulls the scans out of
+Outlook, works out where one letter ends and the next begins from the incoming
+stamp, reads who the sender is, and forwards each one to the right address.
 
-**Kein LLM, keine externe API, keine Cloud.** Die Klassifizierung läuft
-ausschließlich über Regeln (Regex, Stichwörter, Absender-Matching). Briefinhalte
-verlassen nie den Rechner. Jede Zuordnung ist erklärbar: "Brief ging nach TAX,
-weil Regel X griff."
+The whole thing runs on fixed rules – no AI model, no cloud, nothing leaves the
+machine. That's on purpose. Letter contents are sensitive, and I always want to
+be able to tell *why* a letter ended up where it did. Every decision traces
+back to one concrete rule.
 
-## Funktionen
+When a letter isn't a clear match, it doesn't get sent blindly – it goes into a
+review folder instead. Better to glance at it myself than mail something to the
+wrong tax office.
 
-- **Stempel-Splitting**: Ein Sammel-PDF (mehrere Briefe hintereinander gescannt)
-  wird anhand der visuellen Eingangsstempel wieder in Einzelbriefe zerlegt –
-  per Farberkennung, ohne OCR.
-- **Textextraktion**: Liest den vorhandenen Textlayer (HP LaserJet, 300 DPI);
-  optionaler OCR-Fallback für Seiten ohne Textlayer.
-- **Regelbasierte Klassifizierung**: Scoring pro Abteilung aus
-  `config/departments.yaml`. Höchster Score gewinnt; bei Unsicherheit
-  (zu niedriger Score oder Gleichstand) landet der Brief im Prüfungsordner.
+## What it does
 
-## Setup
+- Splits batch PDFs (many letters scanned back-to-back) at the incoming stamp,
+  purely by colour detection, no OCR.
+- Pulls sender and date from the scan's text layer, tolerating OCR noise.
+- Scores each letter to a department, and if needed drills down further by the
+  address line (e.g. Garnishment vs. Tax Department).
+- Prepares the result as an Outlook draft, or sends it straight away.
+
+## Getting started
 
 ```bash
 pip install -r requirements.txt
 ```
 
-Windows vorausgesetzt (Outlook-Anbindung via `pywin32`). Tesseract-OCR ist
-optional und standardmäßig deaktiviert.
+Runs on Windows with Outlook (for sending). Tesseract isn't required – it's
+only there as an optional fallback for the rare scan without a text layer.
 
-## Nutzung
-
-Sammel-PDF in Einzelbriefe splitten:
+See every command:
 
 ```bash
-python -m postpilot.stamp_splitter sammel.pdf --out work/split --review review
+py -m postpilot
 ```
 
-Einzelbriefe klassifizieren:
+The usual run – grab the scans from Outlook and prepare drafts:
 
 ```bash
-python -m postpilot.rule_engine work/split --config config/departments.yaml
+py -m postpilot --fetch
 ```
 
-## Konfiguration
+Once the drafts look right, send for real with `--send`:
 
-Abteilungen und Regeln werden in `config/departments.yaml` gepflegt – pro
-Abteilung Empfänger-Adresse, Betreff-/Body-Vorlage und Scoring-Regeln
-(`senders`, `keywords`). Der Prüfungsordner greift, wenn kein eindeutiger
-Gewinner über dem Mindest-Score steht.
-
-## Projektstruktur
-
+```bash
+py -m postpilot --fetch --send
 ```
-postpilot/
-├── stamp_splitter.py   # Sammel-PDF anhand Eingangsstempel splitten
-├── pdf_extract.py      # Textlayer lesen (+ optionaler OCR-Fallback)
-└── rule_engine.py      # regelbasiertes Scoring & Klassifizierung
-config/
-└── departments.yaml    # Abteilungen, Regeln, Fallback
-```
+
+## Configuration
+
+Which department gets which rules and recipient address lives in
+`config/departments.yaml`. The real addresses and my signature sit in a local
+copy (`departments.local.yaml`) that stays out of the repo – the versioned file
+only holds placeholders.
