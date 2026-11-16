@@ -1,13 +1,3 @@
-"""Orchestration: one command runs the whole pipeline.
-
-  1. Split the source PDF into individual letters by their incoming stamp
-     -> work/split/<DD_MM_YYYY>/
-  2. Classify and forward those letters (TAX only by default)
-     -> dry run (Outlook drafts / .eml) unless --send is given.
-
-Run `py -m postpilot` with no arguments to print the usage overview.
-"""
-
 from __future__ import annotations
 
 import argparse
@@ -76,9 +66,13 @@ def run(
     out_dir = Path(out_base) / day
 
     log.info("splitting %s -> %s", pdf, out_dir)
-    split = split_by_stamps(pdf, out_dir, review_dir, StampConfig(resolution=resolution))
+    split = split_by_stamps(
+        pdf, out_dir, review_dir, StampConfig(resolution=resolution)
+    )
     if not split.ok:
-        log.warning("split not performed (%s) - whole PDF moved to review/.", split.reason)
+        log.warning(
+            "split not performed (%s) - whole PDF moved to review/.", split.reason
+        )
         return {
             "split_ok": False,
             "reason": split.reason,
@@ -110,11 +104,17 @@ def scantome_settings() -> dict:
     import yaml
 
     try:
-        data = yaml.safe_load(Path(default_config_path()).read_text(encoding="utf-8")) or {}
+        data = (
+            yaml.safe_load(Path(default_config_path()).read_text(encoding="utf-8"))
+            or {}
+        )
     except Exception:
         return {"folder": None, "only_unread": True}
     sec = data.get("scantome") or {}
-    return {"folder": sec.get("folder"), "only_unread": bool(sec.get("only_unread", True))}
+    return {
+        "folder": sec.get("folder"),
+        "only_unread": bool(sec.get("only_unread", True)),
+    }
 
 
 def fetch_from_scantome(
@@ -141,8 +141,12 @@ def _main() -> None:
         usage()
         return
 
-    parser = argparse.ArgumentParser(prog="postpilot", add_help=True, description=USAGE,
-                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(
+        prog="postpilot",
+        add_help=True,
+        description=USAGE,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     parser.add_argument("--pdf", default="TAX.pdf")
     parser.add_argument("--fetch", action="store_true")
     parser.add_argument("--folder", default=None)
@@ -207,11 +211,17 @@ def _main() -> None:
     tot_letters = tot_mail = tot_review = tot_skip = 0
     for src, result in results:
         if not result["split_ok"]:
-            print(f"[ABORT] {Path(src).name}: {result['reason']} -> {result.get('review_path')}")
+            print(
+                f"[ABORT] {Path(src).name}: {result['reason']} -> {result.get('review_path')}"
+            )
             continue
         report = result["routed"]
         tot_letters += result["letters"]
-        tot_mail += sum(1 for r in report if r.get("action") in ("draft", "sent", "eml_written", "created"))
+        tot_mail += sum(
+            1
+            for r in report
+            if r.get("action") in ("draft", "sent", "eml_written", "created")
+        )
         tot_review += sum(1 for r in report if r.get("action") == "review")
         tot_skip += sum(1 for r in report if r.get("action") == "skipped")
     print(

@@ -1,22 +1,3 @@
-"""Text extraction from scanned letter PDFs.
-
-The HP LaserJet scans already carry a text layer (300 DPI, OCR on). That layer
-is noisy ("Finanzamt Internatjonq", "Flnanzamt") but good enough for rule-based
-classification - rapidfuzz in rule_engine absorbs the OCR errors. Reading order:
-
-  1. Read the text layer per page (pdfplumber).
-  2. If a page's text layer is essentially empty, optionally fall back to OCR
-     (pytesseract). Disabled by default (no Tesseract required).
-
-Extracted fields (calibrated on TAX.pdf):
-  sender    : "Finanzamt <X>"
-  date      : document date (prefers the "Datum" header line, ignores the stamp)
-  recipient : "Amazon Deutschland ..." when present in the text
-  full_text : whole text, used by the keyword rules
-
-All fields are best-effort: missing values become "", never an exception.
-"""
-
 from __future__ import annotations
 
 import logging
@@ -215,12 +196,16 @@ def _main() -> None:
     import argparse
     import json
 
-    parser = argparse.ArgumentParser(description="Extract text fields from a letter PDF.")
+    parser = argparse.ArgumentParser(
+        description="Extract text fields from a letter PDF."
+    )
     parser.add_argument("pdf", help="Path to the PDF")
     parser.add_argument(
         "--ocr", action="store_true", help="Enable OCR fallback (needs pytesseract)"
     )
-    parser.add_argument("--full", action="store_true", help="Include full text in output")
+    parser.add_argument(
+        "--full", action="store_true", help="Include full text in output"
+    )
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
 

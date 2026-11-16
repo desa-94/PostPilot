@@ -1,15 +1,3 @@
-"""Cross-platform mail backend (.eml files).
-
-An alternative to outlook_client for environments without Outlook/pywin32
-(Linux, CI, local tests). Instead of creating an Outlook mail it writes a
-standard .eml file (RFC 822 / MIME) with the attachment, openable in any mail
-client. This never sends and never touches the network - it only writes a file,
-regardless of the dry_run flag (accepted to keep the signature identical to
-outlook_client.send_message so the router can swap backends freely).
-
-Dependencies: Python standard library only (email, pathlib, mimetypes).
-"""
-
 from __future__ import annotations
 
 import logging
@@ -103,8 +91,12 @@ def _main() -> None:
     parser.add_argument("--outbox", default=DEFAULT_OUTBOX)
     args = parser.parse_args()
 
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
-    res = send_message(args.to, args.subject, args.body, args.attach, outbox=args.outbox)
+    logging.basicConfig(
+        level=logging.INFO, format="%(levelname)s %(name)s: %(message)s"
+    )
+    res = send_message(
+        args.to, args.subject, args.body, args.attach, outbox=args.outbox
+    )
     print(res)
 
 

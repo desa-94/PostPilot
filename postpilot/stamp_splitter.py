@@ -1,25 +1,3 @@
-"""Split a batch PDF into individual letters by their incoming-mail stamp.
-
-Several letters are scanned back-to-back, each carrying an incoming stamp on
-its first page, and saved as one PDF. The stamp is the only coloured content
-(blue frame + red date) on an otherwise black-and-white page:
-
-    [ EINGEGANGEN ]      <- blue frame
-      05. Nov. 2026      <- red date
-
-Instead of unreliable OCR on the coloured stamp, detection is purely visual:
-each page is rendered and the fraction of blue and red pixels in the top third
-(ROI) is measured. A stamp needs BOTH channels above threshold - the red date
-is the reliable discriminator, since blue signatures or red office seals in the
-letter body only ever show a single channel. No Tesseract required.
-
-Fail-safe: on any uncertainty the PDF is NOT split but moved unchanged to
-review/ for a human. Triggered by: no stamp found, first page without a stamp,
-or an ambiguous page (blue present, red just below threshold).
-
-Dependencies: PyMuPDF (fitz), numpy.
-"""
-
 from __future__ import annotations
 
 import logging
@@ -99,7 +77,9 @@ def _color_fractions(roi: np.ndarray, cfg: StampConfig) -> tuple[float, float]:
     r = roi[:, :, 0].astype(int)
     g = roi[:, :, 1].astype(int)
     b = roi[:, :, 2].astype(int)
-    blue = (b > cfg.blue_min) & (b - r > cfg.blue_over_red) & (b - g > cfg.blue_over_green)
+    blue = (
+        (b > cfg.blue_min) & (b - r > cfg.blue_over_red) & (b - g > cfg.blue_over_green)
+    )
     red = (r > cfg.red_min) & (r - g > cfg.red_over_green) & (r - b > cfg.red_over_blue)
     total = roi.shape[0] * roi.shape[1]
     if total == 0:
@@ -113,7 +93,9 @@ def _roi_slice(arr: np.ndarray, cfg: StampConfig) -> np.ndarray:
     return arr[int(h * y0) : int(h * y1), int(w * x0) : int(w * x1), :]
 
 
-def _classify_page(blue_pct: float, red_pct: float, cfg: StampConfig) -> tuple[bool, bool]:
+def _classify_page(
+    blue_pct: float, red_pct: float, cfg: StampConfig
+) -> tuple[bool, bool]:
     blue_hit = blue_pct >= cfg.blue_thresh_pct
     red_hit = red_pct >= cfg.red_thresh_pct
     is_stamp = blue_hit and red_hit
@@ -125,7 +107,9 @@ def _classify_page(blue_pct: float, red_pct: float, cfg: StampConfig) -> tuple[b
     return bool(is_stamp), bool(ambiguous)
 
 
-def detect_stamp_pages(pdf_path: str | Path, cfg: StampConfig | None = None) -> list[PageScan]:
+def detect_stamp_pages(
+    pdf_path: str | Path, cfg: StampConfig | None = None
+) -> list[PageScan]:
     cfg = cfg or StampConfig()
     pdf_path = Path(pdf_path)
     scans: list[PageScan] = []
@@ -136,7 +120,9 @@ def detect_stamp_pages(pdf_path: str | Path, cfg: StampConfig | None = None) -> 
             blue_pct, red_pct = _color_fractions(roi, cfg)
             is_stamp, ambiguous = _classify_page(blue_pct, red_pct, cfg)
             scans.append(
-                PageScan(i + 1, round(blue_pct, 4), round(red_pct, 4), is_stamp, ambiguous)
+                PageScan(
+                    i + 1, round(blue_pct, 4), round(red_pct, 4), is_stamp, ambiguous
+                )
             )
             log.debug(
                 "p.%d blue=%.3f%% red=%.3f%% stamp=%s ambig=%s",
@@ -149,7 +135,9 @@ def detect_stamp_pages(pdf_path: str | Path, cfg: StampConfig | None = None) -> 
     return scans
 
 
-def group_pages_by_stamp_starts(stamp_pages: list[int], total_pages: int) -> list[tuple[int, int]]:
+def group_pages_by_stamp_starts(
+    stamp_pages: list[int], total_pages: int
+) -> list[tuple[int, int]]:
     ranges: list[tuple[int, int]] = []
     for idx, start in enumerate(stamp_pages):
         end = (stamp_pages[idx + 1] - 1) if idx + 1 < len(stamp_pages) else total_pages
@@ -188,28 +176,40 @@ def split_by_stamps(
     if total == 0:
         reason = "PDF has no pages"
         return SplitResult(
-            str(pdf_path), False, reason, scans,
+            str(pdf_path),
+            False,
+            reason,
+            scans,
             review_path=_move_to_review(pdf_path, review_dir, reason),
         )
 
     if not stamp_pages:
         reason = "no incoming stamp detected"
         return SplitResult(
-            str(pdf_path), False, reason, scans,
+            str(pdf_path),
+            False,
+            reason,
+            scans,
             review_path=_move_to_review(pdf_path, review_dir, reason),
         )
 
     if scans[0].page not in stamp_pages:
         reason = f"first page without stamp (first stamp on p.{stamp_pages[0]})"
         return SplitResult(
-            str(pdf_path), False, reason, scans,
+            str(pdf_path),
+            False,
+            reason,
+            scans,
             review_path=_move_to_review(pdf_path, review_dir, reason),
         )
 
     if ambiguous_pages:
         reason = f"uncertain stamp detection on page(s) {ambiguous_pages}"
         return SplitResult(
-            str(pdf_path), False, reason, scans,
+            str(pdf_path),
+            False,
+            reason,
+            scans,
             review_path=_move_to_review(pdf_path, review_dir, reason),
         )
 
@@ -224,7 +224,9 @@ def split_by_stamps(
             out_path = out_dir / out_name
             dst.save(out_path)
             dst.close()
-            letters.append({"index": idx, "start": start, "end": end, "path": str(out_path)})
+            letters.append(
+                {"index": idx, "start": start, "end": end, "path": str(out_path)}
+            )
             log.info("letter %02d: p.%d-%d -> %s", idx, start, end, out_name)
 
     reason = f"{len(letters)} letters split from {total} pages"
@@ -255,8 +257,16 @@ def write_debug_image(
             r = roi[:, :, 0].astype(int)
             g = roi[:, :, 1].astype(int)
             b = roi[:, :, 2].astype(int)
-            blue = (b > cfg.blue_min) & (b - r > cfg.blue_over_red) & (b - g > cfg.blue_over_green)
-            red = (r > cfg.red_min) & (r - g > cfg.red_over_green) & (r - b > cfg.red_over_blue)
+            blue = (
+                (b > cfg.blue_min)
+                & (b - r > cfg.blue_over_red)
+                & (b - g > cfg.blue_over_green)
+            )
+            red = (
+                (r > cfg.red_min)
+                & (r - g > cfg.red_over_green)
+                & (r - b > cfg.red_over_blue)
+            )
             roi[blue] = [0, 255, 0]
             roi[red] = [255, 0, 255]
             arr[ry0:ry1, rx0:rx1, :] = roi
@@ -287,7 +297,9 @@ def _main() -> None:
     parser.add_argument("pdf", help="Path to the batch PDF")
     parser.add_argument("--out", default="work/split", help="Output folder for letters")
     parser.add_argument("--review", default="review", help="Review folder (fail-safe)")
-    parser.add_argument("--resolution", type=int, default=150, help="Render DPI (default 150)")
+    parser.add_argument(
+        "--resolution", type=int, default=150, help="Render DPI (default 150)"
+    )
     parser.add_argument(
         "--date",
         default=_date.today().strftime("%d_%m_%Y"),
@@ -298,7 +310,9 @@ def _main() -> None:
         action="store_true",
         help="Do not create a date subfolder (write directly into <out>).",
     )
-    parser.add_argument("--debug-image", metavar="PNG", help="Write a debug image and exit")
+    parser.add_argument(
+        "--debug-image", metavar="PNG", help="Write a debug image and exit"
+    )
     parser.add_argument("-v", "--verbose", action="store_true", help="DEBUG logging")
     args = parser.parse_args()
 

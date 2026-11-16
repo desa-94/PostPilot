@@ -1,19 +1,3 @@
-"""Ties extraction, classification and sending together.
-
-Per individual letter PDF:
-  1. pdf_extract.extract()  -> fields (sender, date, recipient, full_text)
-  2. rule_engine.classify() -> department + score + matches
-  3. auto_send == False -> move PDF to review/ (no send)
-     auto_send == True  -> render subject/body from the department template and
-                           create the mail (draft or send).
-
-Send safety: dry_run=True (default) creates Outlook drafts / .eml files only.
-dry_run=False actually sends.
-
-Template placeholders: {sender}, {date}, {recipient}, {department}, {score}.
-A missing placeholder renders as "" rather than raising.
-"""
-
 from __future__ import annotations
 
 import logging
@@ -209,7 +193,9 @@ def _main() -> None:
     import json
 
     parser = argparse.ArgumentParser(description="Classify and forward letters.")
-    parser.add_argument("folder", help="Folder with individual letter PDFs (e.g. work/split)")
+    parser.add_argument(
+        "folder", help="Folder with individual letter PDFs (e.g. work/split)"
+    )
     parser.add_argument(
         "--config",
         default=None,
@@ -217,7 +203,9 @@ def _main() -> None:
         "else departments.yaml).",
     )
     parser.add_argument("--review", default="review")
-    parser.add_argument("--only", metavar="DEPT", help="only this department (e.g. TAX)")
+    parser.add_argument(
+        "--only", metavar="DEPT", help="only this department (e.g. TAX)"
+    )
     parser.add_argument(
         "--send",
         action="store_true",
@@ -250,7 +238,11 @@ def _main() -> None:
     )
 
     mode = "SEND" if args.send else "DRY-RUN (drafts)"
-    n_mail = sum(1 for r in report if r.get("action") in ("draft", "sent", "eml_written", "created"))
+    n_mail = sum(
+        1
+        for r in report
+        if r.get("action") in ("draft", "sent", "eml_written", "created")
+    )
     n_review = sum(1 for r in report if r.get("action") == "review")
     n_skip = sum(1 for r in report if r.get("action") == "skipped")
     print(json.dumps(report, indent=2, ensure_ascii=False))

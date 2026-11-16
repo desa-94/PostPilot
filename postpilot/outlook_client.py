@@ -1,15 +1,3 @@
-"""Outlook integration via pywin32 (Windows).
-
-send_message() creates an Outlook mail with attachments: as a draft when
-dry_run=True (default, nothing leaves the machine), or sent when dry_run=False.
-
-fetch_pdf_attachments() reads new (unread) mails from a folder, saves their PDF
-attachments locally and returns one record per attachment (path, message id,
-subject). Mails are marked read only after their attachments were saved.
-
-Requires pywin32 (win32com.client); Windows with Outlook only.
-"""
-
 from __future__ import annotations
 
 import logging
@@ -129,7 +117,9 @@ def fetch_pdf_attachments(
         try:
             filtered = folder.Items.Restrict("[UnRead] = True")
             items = list(filtered)
-            log.info("reading '%s' (%d unread of %d total)", folder.Name, len(items), total)
+            log.info(
+                "reading '%s' (%d unread of %d total)", folder.Name, len(items), total
+            )
         except Exception as exc:
             log.warning("Restrict failed (%s) - reading all %d items.", exc, total)
             items = list(folder.Items)
@@ -234,25 +224,35 @@ def send_message(
 def _main() -> None:
     import argparse
 
-    parser = argparse.ArgumentParser(description="Outlook helper (draft / fetch / list).")
+    parser = argparse.ArgumentParser(
+        description="Outlook helper (draft / fetch / list)."
+    )
     parser.add_argument(
-        "--list-folders", action="store_true",
+        "--list-folders",
+        action="store_true",
         help="List all Outlook folders (diagnostic) and exit.",
     )
     parser.add_argument(
-        "--fetch", metavar="OUTDIR",
+        "--fetch",
+        metavar="OUTDIR",
         help="Instead of a draft: fetch PDF attachments from the folder to OUTDIR.",
     )
-    parser.add_argument("--folder", default="ScanToMe", help="Outlook folder (default ScanToMe)")
+    parser.add_argument(
+        "--folder", default="ScanToMe", help="Outlook folder (default ScanToMe)"
+    )
     parser.add_argument("--all", action="store_true", help="also fetch read mails")
     parser.add_argument("--to", help="recipient (only needed for draft/send)")
     parser.add_argument("--subject", default="PostPilot Test")
     parser.add_argument("--body", default="PostPilot test draft.")
     parser.add_argument("--attach", nargs="*", default=[])
-    parser.add_argument("--send", action="store_true", help="actually send (else draft)")
+    parser.add_argument(
+        "--send", action="store_true", help="actually send (else draft)"
+    )
     args = parser.parse_args()
 
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+    logging.basicConfig(
+        level=logging.INFO, format="%(levelname)s %(name)s: %(message)s"
+    )
     if args.list_folders:
         for p in list_all_folders():
             print(p)
@@ -267,7 +267,9 @@ def _main() -> None:
         return
     if not args.to:
         parser.error("--to is required (except with --fetch)")
-    res = send_message(args.to, args.subject, args.body, args.attach, dry_run=not args.send)
+    res = send_message(
+        args.to, args.subject, args.body, args.attach, dry_run=not args.send
+    )
     print(res)
 
 
