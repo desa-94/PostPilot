@@ -57,3 +57,9 @@ fallback:
   department: "UNGEKLAERT"
   email: "mailroom@example.com"
   min_score: 20
+
+# Outlook-Ordner, aus dem --fetch die gescannten PDF-Anhaenge holt.
+# Pfad an das eigene Postfach anpassen (siehe: py -m postpilot.outlook_client --list-folders).
+scantome:
+  folder: "Posteingang/ScanToMe"
+  only_unread: true

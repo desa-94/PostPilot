@@ -17,6 +17,8 @@ Beispiele:
   python -m postpilot --send               # heute splitten + WIRKLICH senden
   python -m postpilot --date 06_11_2026    # fuer ein anderes Datum
   python -m postpilot --pdf Sammel.pdf     # andere Quelldatei
+  python -m postpilot --fetch              # PDFs aus Outlook-Ordner ScanToMe
+                                           #   holen und alle verarbeiten
 """
 
 from __future__ import annotations
@@ -75,12 +77,61 @@ def run(
     return {"split_ok": True, "letters": len(split.letters), "routed": report}
 
 
+def scantome_settings() -> dict:
+    """
+    Liest den optionalen 'scantome'-Abschnitt aus der (auto-gefundenen) Config.
+
+    Returns: {"folder": <str|None>, "only_unread": <bool>} — Defaults, wenn
+    kein scantome-Abschnitt existiert.
+    """
+    import yaml
+
+    try:
+        data = yaml.safe_load(Path(default_config_path()).read_text(encoding="utf-8")) or {}
+    except Exception:
+        return {"folder": None, "only_unread": True}
+    sec = data.get("scantome") or {}
+    return {"folder": sec.get("folder"), "only_unread": bool(sec.get("only_unread", True))}
+
+
+def fetch_from_scantome(
+    *,
+    folder_path: str = "ScanToMe",
+    inbox_base: str | Path = "work/inbox",
+    day: str | None = None,
+    only_unread: bool = True,
+) -> list[str]:
+    """
+    Holt PDF-Anhaenge aus dem Outlook-Ordner ScanToMe nach work/inbox/<datum>/.
+
+    Returns: Liste der lokal gespeicherten PDF-Pfade (kann leer sein).
+    Import von outlook_client erfolgt lazy (nur Windows + pywin32).
+    """
+    from postpilot import outlook_client
+
+    day = day or date.today().strftime("%d_%m_%Y")
+    inbox = Path(inbox_base) / day
+    rows = outlook_client.fetch_pdf_attachments(
+        inbox, folder_path=folder_path, only_unread=only_unread
+    )
+    paths = [r["pdf_path"] for r in rows]
+    log.info("ScanToMe: %d PDF(s) geholt -> %s", len(paths), inbox)
+    return paths
+
+
 def _main() -> None:
     parser = argparse.ArgumentParser(
         prog="postpilot",
         description="PostPilot: Sammel-PDF splitten und TAX-Briefe weiterleiten (ein Lauf).",
     )
     parser.add_argument("--pdf", default="TAX.pdf", help="Quell-Sammel-PDF (Default: TAX.pdf)")
+    parser.add_argument(
+        "--fetch", action="store_true",
+        help="PDF-Anhaenge aus dem Outlook-Ordner ScanToMe holen und alle "
+             "verarbeiten (statt der lokalen --pdf-Datei).",
+    )
+    parser.add_argument("--folder", default=None, help="Outlook-Ordner fuer --fetch (Default: aus Config scantome.folder)")
+    parser.add_argument("--all", action="store_true", help="bei --fetch auch gelesene Mails holen")
     parser.add_argument("--date", default=None, help="Datums-Ordner TT_MM_JJJJ (Default: heute)")
     parser.add_argument("--out", default="work/split", help="Basis-Ausgabeordner")
     parser.add_argument("--review", default="review", help="Pruefungsordner")
@@ -102,25 +153,53 @@ def _main() -> None:
         format="%(levelname)s %(name)s: %(message)s",
     )
 
-    result = run(
-        args.pdf, out_base=args.out, review_dir=args.review, day=args.date,
-        only_department=args.only, send=args.send, backend=args.backend,
-        resolution=args.resolution,
-    )
+    # Quell-PDFs bestimmen: aus ScanToMe holen oder lokale --pdf-Datei.
+    if args.fetch:
+        st = scantome_settings()
+        folder = args.folder or st.get("folder")
+        if not folder:
+            parser.error(
+                "Kein ScanToMe-Ordner konfiguriert. Entweder --folder angeben "
+                "oder scantome.folder in der Config setzen "
+                "(py -m postpilot.outlook_client --list-folders zeigt die Ordner)."
+            )
+        only_unread = st.get("only_unread", True) and not args.all
+        sources = fetch_from_scantome(
+            folder_path=folder, day=args.date, only_unread=only_unread
+        )
+        if not sources:
+            print("\n[ScanToMe] Keine neuen PDF-Anhaenge gefunden.")
+            return
+    else:
+        sources = [args.pdf]
 
-    # Zusammenfassung
-    if not result["split_ok"]:
-        print(f"\n[ABBRUCH] Splitting nicht moeglich: {result['reason']}")
-        print(f"          Ganzes PDF -> {result.get('review_path')}")
-        return
+    # Jede Quelle verarbeiten; Ergebnisse aggregieren. Bei --fetch je Quelle
+    # ein eigener Datums-Unterordner, damit mehrere Sammel-PDFs nicht kollidieren.
+    results = []
+    for idx, src in enumerate(sources, 1):
+        day = args.date
+        if args.fetch and len(sources) > 1:
+            base_day = args.date or date.today().strftime("%d_%m_%Y")
+            day = f"{base_day}/{idx:02d}"
+        results.append((src, run(
+            src, out_base=args.out, review_dir=args.review, day=day,
+            only_department=args.only, send=args.send, backend=args.backend,
+            resolution=args.resolution,
+        )))
 
-    report = result["routed"]
     modus = "VERSAND" if args.send else "DRY-RUN (Entwuerfe)"
-    n_mail = sum(1 for r in report if r.get("aktion") in ("entwurf", "versendet", "eml_geschrieben", "erzeugt"))
-    n_review = sum(1 for r in report if r.get("aktion") == "review")
-    n_skip = sum(1 for r in report if r.get("aktion") == "uebersprungen")
-    print(f"\n[{modus}] {result['letters']} Briefe gesplittet | "
-          f"{n_mail} Mail(s), {n_review} -> review, {n_skip} uebersprungen")
+    tot_letters = tot_mail = tot_review = tot_skip = 0
+    for src, result in results:
+        if not result["split_ok"]:
+            print(f"[ABBRUCH] {Path(src).name}: {result['reason']} -> {result.get('review_path')}")
+            continue
+        report = result["routed"]
+        tot_letters += result["letters"]
+        tot_mail += sum(1 for r in report if r.get("aktion") in ("entwurf", "versendet", "eml_geschrieben", "erzeugt"))
+        tot_review += sum(1 for r in report if r.get("aktion") == "review")
+        tot_skip += sum(1 for r in report if r.get("aktion") == "uebersprungen")
+    print(f"\n[{modus}] {len(results)} Quelle(n) | {tot_letters} Briefe gesplittet | "
+          f"{tot_mail} Mail(s), {tot_review} -> review, {tot_skip} uebersprungen")
     if not args.send:
         print("Hinweis: Dry-Run. Zum echten Versand erneut mit --send aufrufen.")
 
