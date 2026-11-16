@@ -1,28 +1,20 @@
-"""
-pdf_extract.py — Textextraktion aus gescannten Brief-PDFs.
+"""Text extraction from scanned letter PDFs.
 
-Strategie
----------
-Die HP-LaserJet-Scans enthalten bereits einen Textlayer (300 DPI, OCR an).
-Dieser Layer ist fehlerhaft ("Finanzamt Internatjonq", "Flnanzamt"), aber fuer
-die regelbasierte Klassifizierung ausreichend — die eigentliche Fehlertoleranz
-leistet spaeter rapidfuzz im rule_engine. Daher:
+The HP LaserJet scans already carry a text layer (300 DPI, OCR on). That layer
+is noisy ("Finanzamt Internatjonq", "Flnanzamt") but good enough for rule-based
+classification - rapidfuzz in rule_engine absorbs the OCR errors. Reading order:
 
-  1. Textlayer pro Seite lesen (pdfplumber; primaer).
-  2. Ist der Textlayer einer Seite praktisch leer -> optionaler OCR-Fallback
-     (pytesseract). Standardmaessig ABGESCHALTET (kein Tesseract noetig).
+  1. Read the text layer per page (pdfplumber).
+  2. If a page's text layer is essentially empty, optionally fall back to OCR
+     (pytesseract). Disabled by default (no Tesseract required).
 
-Extrahierte Felder (kalibriert an TAX.pdf, 25 Briefe)
------------------------------------------------------
-  absender   : "Finanzamt <X>"            Trefferquote 25/25
-  datum      : Dokumentdatum              25/25  (bevorzugt die "Datum"-Zeile,
-               Stempeldatum wird ignoriert)
-  empfaenger : "Amazon Deutschland ..."   sofern im Text vorhanden (~17/25)
-  volltext   : kompletter Text            fuer die keyword-Regeln
+Extracted fields (calibrated on TAX.pdf):
+  sender    : "Finanzamt <X>"
+  date      : document date (prefers the "Datum" header line, ignores the stamp)
+  recipient : "Amazon Deutschland ..." when present in the text
+  full_text : whole text, used by the keyword rules
 
-Alle Felder sind best-effort: fehlende Werte => leerer String, nie Exception.
-
-Abhaengigkeiten: pdfplumber. Optional: pytesseract + Pillow (nur OCR-Fallback).
+All fields are best-effort: missing values become "", never an exception.
 """
 
 from __future__ import annotations
@@ -35,14 +27,11 @@ from pathlib import Path
 try:
     import pdfplumber
 except ImportError as exc:  # pragma: no cover
-    raise ImportError("pdfplumber wird benoetigt: pip install pdfplumber") from exc
+    raise ImportError("pdfplumber required: pip install pdfplumber") from exc
 
 log = logging.getLogger("postpilot.pdf_extract")
 
 
-# --------------------------------------------------------------------------- #
-# Muster (kalibriert) — zentral, damit im rule_engine nicht dupliziert
-# --------------------------------------------------------------------------- #
 _MONTHS = (
     "Januar|Februar|M[aä]rz|April|Mai|Juni|Juli|August|"
     "September|Oktober|November|Dezember"
@@ -63,30 +52,26 @@ _MONTH_NUM = {
     "dezember": 12,
 }
 
-# Absender: "Finanzamt <Name>" — Name = Buchstaben/Umlaute/Bindestrich, ein Zeilenrest.
-_RE_ABSENDER = re.compile(
+_RE_SENDER = re.compile(
     r"Finanzamt\s+([A-Za-zÄÖÜäöüß.\-]+(?:\s+[A-Za-zÄÖÜäöüß.\-]+)?)", re.IGNORECASE
 )
-# Empfaenger (Amazon-Entitaeten im Brief).
-_RE_EMPFAENGER = re.compile(
+_RE_RECIPIENT = re.compile(
     r"(Amazon\s+Deutschland\s+Services[A-Za-zÄÖÜäöüß. ]*)", re.IGNORECASE
 )
 
-# Datum: bevorzugt die "Datum"-Zeile des Briefkopfs; Stempeldatum bleibt aussen vor.
-_RE_DATUM_LABEL_NUM = re.compile(
+_RE_DATE_LABEL_NUM = re.compile(
     r"Datum[^0-9]{0,15}(\d{1,2})\.(\d{1,2})\.(\d{4})", re.IGNORECASE
 )
-_RE_DATUM_LABEL_TXT = re.compile(
+_RE_DATE_LABEL_TXT = re.compile(
     r"Datum[^0-9]{0,15}(\d{1,2})\.?\s*(" + _MONTHS + r")\s+(\d{4})", re.IGNORECASE
 )
-_RE_DATUM_TXT = re.compile(
+_RE_DATE_TXT = re.compile(
     r"\b(\d{1,2})\.?\s*(" + _MONTHS + r")\s+(\d{4})\b", re.IGNORECASE
 )
-_RE_DATUM_NUM = re.compile(r"\b(\d{1,2})\.(\d{1,2})\.(\d{4})\b")
+_RE_DATE_NUM = re.compile(r"\b(\d{1,2})\.(\d{1,2})\.(\d{4})\b")
 
 
 def _norm_date(d, m, y) -> str:
-    """Normalisiert auf TT.MM.JJJJ. Monat kann Zahl oder (OCR-)Name sein."""
     if isinstance(m, str) and not m.isdigit():
         key = m.lower().replace("ä", "a").replace("ö", "o").replace("ü", "u")
         m = _MONTH_NUM.get(key, 0)
@@ -96,48 +81,41 @@ def _norm_date(d, m, y) -> str:
         return ""
 
 
-# --------------------------------------------------------------------------- #
-# Ergebnis-Objekt
-# --------------------------------------------------------------------------- #
 @dataclass
 class ExtractResult:
     source: str
-    absender: str = ""
-    empfaenger: str = ""
-    datum: str = ""
-    datum_quelle: str = ""  # Herkunft des Datums (Nachvollziehbarkeit)
-    volltext: str = ""
+    sender: str = ""
+    recipient: str = ""
+    date: str = ""
+    date_source: str = ""
+    full_text: str = ""
     page_count: int = 0
-    used_ocr: bool = False  # True, wenn OCR-Fallback gegriffen hat
+    used_ocr: bool = False
     empty_pages: list[int] = field(default_factory=list)
 
     def as_dict(self) -> dict:
         return {
-            "datei": self.source,
-            "absender": self.absender,
-            "empfaenger": self.empfaenger,
-            "datum": self.datum,
-            "datum_quelle": self.datum_quelle,
-            "seiten": self.page_count,
+            "file": self.source,
+            "sender": self.sender,
+            "recipient": self.recipient,
+            "date": self.date,
+            "date_source": self.date_source,
+            "pages": self.page_count,
             "ocr": self.used_ocr,
         }
 
 
-# --------------------------------------------------------------------------- #
-# Textlayer lesen (+ optionaler OCR-Fallback)
-# --------------------------------------------------------------------------- #
 def _ocr_page(page, dpi: int = 300, lang: str = "deu") -> str:
-    """OCR-Fallback fuer eine leere Seite. Nur aktiv, wenn pytesseract vorhanden."""
     try:
-        import pytesseract  # lokaler Import: Tool laeuft auch ohne das Paket
+        import pytesseract
     except ImportError:
-        log.warning("OCR-Fallback angefordert, aber pytesseract fehlt — uebersprungen.")
+        log.warning("OCR fallback requested but pytesseract missing - skipped.")
         return ""
     try:
         img = page.to_image(resolution=dpi).original
         return pytesseract.image_to_string(img, lang=lang) or ""
     except Exception as exc:  # pragma: no cover
-        log.warning("OCR-Fallback fehlgeschlagen: %s", exc)
+        log.warning("OCR fallback failed: %s", exc)
         return ""
 
 
@@ -149,16 +127,6 @@ def read_pages(
     ocr_lang: str = "deu",
     min_chars: int = 15,
 ) -> tuple[list[str], list[int], bool]:
-    """
-    Liest den Textlayer aller Seiten.
-
-    Args:
-        ocr_fallback: Wenn True und eine Seite < min_chars Zeichen liefert,
-                      wird OCR versucht (benoetigt pytesseract). Default False.
-        min_chars:    Schwelle, ab der eine Seite als "leer" gilt.
-
-    Returns: (seiten_texte, leere_seiten_1indexiert, used_ocr)
-    """
     pdf_path = Path(pdf_path)
     texts: list[str] = []
     empty: list[int] = []
@@ -177,51 +145,35 @@ def read_pages(
     return texts, empty, used_ocr
 
 
-# --------------------------------------------------------------------------- #
-# Feld-Extraktion
-# --------------------------------------------------------------------------- #
-def extract_absender(text: str) -> str:
-    m = _RE_ABSENDER.search(text)
+def extract_sender(text: str) -> str:
+    m = _RE_SENDER.search(text)
     if not m:
         return ""
     name = re.sub(r"\s+", " ", m.group(1)).strip(" .,-")
     return f"Finanzamt {name}" if name else "Finanzamt"
 
 
-def extract_empfaenger(text: str) -> str:
-    m = _RE_EMPFAENGER.search(text)
+def extract_recipient(text: str) -> str:
+    m = _RE_RECIPIENT.search(text)
     return re.sub(r"\s+", " ", m.group(1)).strip() if m else ""
 
 
-def extract_datum(text: str) -> tuple[str, str]:
-    """
-    Dokumentdatum als TT.MM.JJJJ + Herkunft.
-
-    Prioritaet:
-      1. "Datum"-Zeile im Briefkopf (numerisch, dann ausgeschrieben)
-      2. erstes ausgeschriebenes Datum im Fliesstext
-      3. erstes numerisches Datum im Fliesstext
-    Das visuelle Stempeldatum liegt im farbigen Stempel und ist im Textlayer
-    unzuverlaessig — es gewinnt daher praktisch nie gegen die "Datum"-Zeile.
-    """
-    m = _RE_DATUM_LABEL_NUM.search(text)
+def extract_date(text: str) -> tuple[str, str]:
+    m = _RE_DATE_LABEL_NUM.search(text)
     if m:
-        return _norm_date(*m.groups()), "Datum-Zeile"
-    m = _RE_DATUM_LABEL_TXT.search(text)
+        return _norm_date(*m.groups()), "header-line"
+    m = _RE_DATE_LABEL_TXT.search(text)
     if m:
-        return _norm_date(m.group(1), m.group(2), m.group(3)), "Datum-Zeile(txt)"
-    m = _RE_DATUM_TXT.search(text)
+        return _norm_date(m.group(1), m.group(2), m.group(3)), "header-line(txt)"
+    m = _RE_DATE_TXT.search(text)
     if m:
-        return _norm_date(m.group(1), m.group(2), m.group(3)), "Fliesstext(txt)"
-    m = _RE_DATUM_NUM.search(text)
+        return _norm_date(m.group(1), m.group(2), m.group(3)), "body(txt)"
+    m = _RE_DATE_NUM.search(text)
     if m:
-        return _norm_date(*m.groups()), "Fliesstext(num)"
-    return "", "keins"
+        return _norm_date(*m.groups()), "body(num)"
+    return "", "none"
 
 
-# --------------------------------------------------------------------------- #
-# Haupteinstieg
-# --------------------------------------------------------------------------- #
 def extract(
     pdf_path: str | Path,
     *,
@@ -229,35 +181,29 @@ def extract(
     ocr_dpi: int = 300,
     ocr_lang: str = "deu",
 ) -> ExtractResult:
-    """
-    Extrahiert alle Felder aus einem (Einzel-)Brief-PDF.
-
-    Fehlertolerant: fehlende Felder bleiben leer, es wird nie geworfen.
-    Der 'volltext' dient dem rule_engine fuer die keyword-Regeln.
-    """
     pdf_path = Path(pdf_path)
     texts, empty, used_ocr = read_pages(
         pdf_path, ocr_fallback=ocr_fallback, ocr_dpi=ocr_dpi, ocr_lang=ocr_lang
     )
-    volltext = "\n".join(texts)
-    datum, datum_quelle = extract_datum(volltext)
+    full_text = "\n".join(texts)
+    date, date_source = extract_date(full_text)
     result = ExtractResult(
         source=str(pdf_path),
-        absender=extract_absender(volltext),
-        empfaenger=extract_empfaenger(volltext),
-        datum=datum,
-        datum_quelle=datum_quelle,
-        volltext=volltext,
+        sender=extract_sender(full_text),
+        recipient=extract_recipient(full_text),
+        date=date,
+        date_source=date_source,
+        full_text=full_text,
         page_count=len(texts),
         used_ocr=used_ocr,
         empty_pages=empty,
     )
     log.info(
-        "Extrakt '%s': absender=%r datum=%r(%s) seiten=%d ocr=%s leer=%s",
+        "extract '%s': sender=%r date=%r(%s) pages=%d ocr=%s empty=%s",
         pdf_path.name,
-        result.absender,
-        result.datum,
-        result.datum_quelle,
+        result.sender,
+        result.date,
+        result.date_source,
         result.page_count,
         used_ocr,
         empty or "-",
@@ -265,23 +211,16 @@ def extract(
     return result
 
 
-# --------------------------------------------------------------------------- #
-# CLI
-# --------------------------------------------------------------------------- #
 def _main() -> None:
     import argparse
     import json
 
-    parser = argparse.ArgumentParser(
-        description="Textfelder aus einem Brief-PDF extrahieren."
-    )
-    parser.add_argument("pdf", help="Pfad zum PDF")
+    parser = argparse.ArgumentParser(description="Extract text fields from a letter PDF.")
+    parser.add_argument("pdf", help="Path to the PDF")
     parser.add_argument(
-        "--ocr",
-        action="store_true",
-        help="OCR-Fallback aktivieren (pytesseract noetig)",
+        "--ocr", action="store_true", help="Enable OCR fallback (needs pytesseract)"
     )
-    parser.add_argument("--full", action="store_true", help="Volltext mit ausgeben")
+    parser.add_argument("--full", action="store_true", help="Include full text in output")
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
 
@@ -292,7 +231,7 @@ def _main() -> None:
     res = extract(args.pdf, ocr_fallback=args.ocr)
     out = res.as_dict()
     if args.full:
-        out["volltext"] = res.volltext
+        out["full_text"] = res.full_text
     print(json.dumps(out, indent=2, ensure_ascii=False))
 
 

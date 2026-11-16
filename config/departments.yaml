@@ -1,15 +1,14 @@
-# PostPilot — Abteilungs- und Regelkonfiguration (VORLAGE)
-# ========================================================
-# Diese Datei ist im Repo versioniert und enthaelt NUR Platzhalter.
-# Echte Adressen/Signaturen gehoeren in config/departments.local.yaml
-# (per .gitignore ausgeschlossen). Betrieb mit:
-#   python -m postpilot.router <ordner> --only TAX --config config/departments.local.yaml
+# PostPilot department and rule configuration (TEMPLATE).
+# Versioned in the repo, placeholders only. Put real addresses/signatures in
+# config/departments.local.yaml (gitignored). The router auto-selects the local
+# file when present.
 #
-# Scoring-Prinzip:
-#   - senders : starkes Signal (Absender passt). Hohe Scores.
-#   - keywords: schwaches Signal. Summiert sich.
-# Pro Brief werden die Scores je Abteilung summiert; hoechster Score gewinnt.
-# Gewinner < fallback.min_score ODER Gleichstand -> UNGEKLAERT (Pruefungsordner).
+# Scoring: sender rules are a strong signal, keyword rules are weak and additive.
+# Per letter the scores per department are summed; highest wins. Below
+# fallback.min_score or a tie -> held for review.
+#
+# Placeholders available in subject_template / body_template:
+#   {sender} {date} {recipient} {department} {score}
 
 departments:
   - name: "TAX"
@@ -20,8 +19,8 @@ departments:
       Thanks and best regards,
 
       <Name>
-      <Rolle>
-      <Abteilung>
+      <Role>
+      <Department>
     rules:
       senders:
         - {pattern: "Finanzamt",   score: 50}
@@ -32,15 +31,10 @@ departments:
         - {pattern: "Aktenzeichen",   score: 5}
         - {pattern: "Pfändung",       score: 5}
         - {pattern: "Vollstreckung",  score: 5}
-    # Sub-Routing INNERHALB von TAX anhand der Adresszeile im Brief.
-    # Reihenfolge = Prioritaet. Hoechster Score gewinnt; greift keine Subroute
-    # (oder Gleichstand / unter subroute_min_score) -> Pruefungsordner review/.
-    #
-    # 'pattern' = exaktes Regex-Match (schnell, praezise).
-    # 'fuzzy'   = optionaler, MENSCHENLESBARER Begriff fuer OCR-tolerantes
-    #             rapidfuzz-Matching (faengt "GarnishmenVt", "GarnishmentV AT").
-    #             WICHTIG: niemals das Regex selbst fuzzy-matchen (sonst entsteht
-    #             aus "Garnishm[a-z]{0,3}" das Unsinns-needle "Garnishmaz03").
+    # Sub-routing inside TAX by the address line. Order = priority; highest wins.
+    # No subroute over subroute_min_score, or a tie -> review.
+    # 'pattern' is an exact regex. 'fuzzy' is an optional human-readable term for
+    # OCR-tolerant rapidfuzz matching (never fuzzy-match the raw regex).
     subroute_min_score: 40
     subroutes:
       - name: "DETAINTAKE"
@@ -58,8 +52,8 @@ fallback:
   email: "mailroom@example.com"
   min_score: 20
 
-# Outlook-Ordner, aus dem --fetch die gescannten PDF-Anhaenge holt.
-# Pfad an das eigene Postfach anpassen (siehe: py -m postpilot.outlook_client --list-folders).
+# Outlook folder that --fetch pulls scanned PDF attachments from.
+# Adjust to your mailbox (see: py -m postpilot.outlook_client --list-folders).
 scantome:
-  folder: "Posteingang/ScanToMe"
+  folder: "Inbox/ScanToMe"
   only_unread: true

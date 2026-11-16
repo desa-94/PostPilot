@@ -1,30 +1,15 @@
-"""
-rule_engine.py — Regelbasierte Klassifizierung (KEIN LLM, KEINE Cloud).
+"""Rule-based classification (no LLM, no cloud).
 
-Prinzip
--------
-Jeder Brief wird gegen die Regeln aus config/departments.yaml gescort:
+Each letter is scored against the rules in config/departments.yaml. Sender
+rules are a strong signal; keyword rules are weak and additive. The highest
+scoring department wins. A letter is held back for review when the winning
+score is below fallback.min_score or two departments tie.
 
-  senders  : starkes Signal (Absender passt)  -> hohe Scores
-  keywords : schwaches Signal (Begriff im Text) -> summiert sich
+Every rule hit is recorded in the matches list (type, pattern, score, matched
+text) so a routing decision can always be explained.
 
-Pro Abteilung werden alle Treffer-Scores summiert. Hoechster Score gewinnt.
-Fail-safe (-> Fallback-Abteilung UNGEKLAERT, Pruefungsordner), wenn:
-  - der Gewinner-Score < fallback.min_score liegt, ODER
-  - ein Gleichstand zwischen zwei Abteilungen besteht.
-
-Nachvollziehbarkeit
--------------------
-Jeder Treffer landet in der 'treffer'-Liste mit Regeltyp, Muster, Score und
-dem konkret gematchten Textausschnitt -> "Brief ging nach TAX, weil Regel X griff".
-
-Fuzzy-Matching (OCR-tolerant)
------------------------------
-Absender-Regeln (senders) nutzen rapidfuzz, um OCR-Fehler zu tolerieren
-("Flnanzamt" ~ "Finanzamt"). Fehlt rapidfuzz, faellt die Engine automatisch
-auf simples Substring-Matching zurueck (Tool bleibt lauffaehig).
-
-Abhaengigkeiten: PyYAML. Optional: rapidfuzz.
+Sender rules may use rapidfuzz to tolerate OCR errors ("Flnanzamt" ~
+"Finanzamt"). Without rapidfuzz the engine falls back to substring matching.
 """
 
 from __future__ import annotations
@@ -38,85 +23,70 @@ import yaml
 
 log = logging.getLogger("postpilot.rule_engine")
 
-# rapidfuzz ist optional. Fehlt es, nutzen wir Substring-Matching.
 try:
     from rapidfuzz import fuzz
 
     _HAVE_RAPIDFUZZ = True
 except ImportError:  # pragma: no cover
     _HAVE_RAPIDFUZZ = False
-    log.info(
-        "rapidfuzz nicht verfuegbar — Fuzzy-Matching faellt auf Substring zurueck."
-    )
+    log.info("rapidfuzz not available - fuzzy matching falls back to substring.")
 
 
-# --------------------------------------------------------------------------- #
-# Ergebnis-Objekte
-# --------------------------------------------------------------------------- #
 @dataclass
-class Treffer:
-    """Ein einzelner Regeltreffer — die Einheit der Nachvollziehbarkeit."""
-
-    typ: str  # "sender" | "keyword"
-    muster: str  # das Regex/Muster aus der Config
-    score: int  # beigetragener Score
-    gematcht: str  # konkret gematchter Textausschnitt (fuzzy: Fundstelle)
+class Match:
+    type: str
+    pattern: str
+    score: int
+    matched: str
 
     def as_dict(self) -> dict:
         return {
-            "typ": self.typ,
-            "muster": self.muster,
+            "type": self.type,
+            "pattern": self.pattern,
             "score": self.score,
-            "gematcht": self.gematcht,
+            "matched": self.matched,
         }
 
 
 @dataclass
-class Klassifikation:
-    datei: str
-    absender: str
-    empfaenger: str
-    datum: str
-    abteilung: str
+class Classification:
+    file: str
+    sender: str
+    recipient: str
+    date: str
+    department: str
     score: int
-    treffer: list[Treffer] = field(default_factory=list)
-    alle_scores: dict = field(
-        default_factory=dict
-    )  # {Abteilung: Score} fuer Transparenz
-    auto_versand: bool = True  # False -> Pruefungsordner
-    grund: str = ""  # Begruendung bei kein Auto-Versand
-
-    # Sub-Routing innerhalb der Abteilung (z.B. TAX -> GARNISHMENT/DETAINTAKE).
-    subroute: str = ""  # Name der Subroute (leer = keine)
-    subroute_email: str = ""  # Ziel-Adresse der Subroute (ueberschreibt dept-email)
-    subroute_treffer: list[Treffer] = field(default_factory=list)
+    matches: list[Match] = field(default_factory=list)
+    all_scores: dict = field(default_factory=dict)
+    auto_send: bool = True
+    reason: str = ""
+    subroute: str = ""
+    subroute_email: str = ""
+    subroute_matches: list[Match] = field(default_factory=list)
 
     def as_dict(self) -> dict:
         return {
-            "datei": self.datei,
-            "absender": self.absender,
-            "empfaenger": self.empfaenger,
-            "datum": self.datum,
-            "abteilung": self.abteilung,
+            "file": self.file,
+            "sender": self.sender,
+            "recipient": self.recipient,
+            "date": self.date,
+            "department": self.department,
             "score": self.score,
-            "treffer": [t.as_dict() for t in self.treffer],
-            "alle_scores": self.alle_scores,
-            "auto_versand": self.auto_versand,
-            "grund": self.grund,
+            "matches": [m.as_dict() for m in self.matches],
+            "all_scores": self.all_scores,
+            "auto_send": self.auto_send,
+            "reason": self.reason,
             "subroute": self.subroute,
             "subroute_email": self.subroute_email,
-            "subroute_treffer": [t.as_dict() for t in self.subroute_treffer],
+            "subroute_matches": [m.as_dict() for m in self.subroute_matches],
         }
 
 
-# --------------------------------------------------------------------------- #
-# Config
-# --------------------------------------------------------------------------- #
 @dataclass
 class RuleConfig:
     departments: list[dict]
     fallback: dict
-    fuzzy_threshold: int = 85  # rapidfuzz partial_ratio-Schwelle fuer senders
+    fuzzy_threshold: int = 85
 
     @classmethod
     def load(cls, path: str | Path) -> RuleConfig:
@@ -127,10 +97,6 @@ class RuleConfig:
         return cls(departments=depts, fallback=fb, fuzzy_threshold=fuzzy)
 
 
-# --------------------------------------------------------------------------- #
-# Matching-Helfer
-# --------------------------------------------------------------------------- #
-# Zeichen, die ein Muster als Regex (statt Literal) kennzeichnen.
 _REGEX_META = set(r"[]()\{}.*+?^$|")
 
 
@@ -141,21 +107,6 @@ def _has_regex_meta(pattern: str) -> bool:
 def _sender_match(
     pattern: str, text: str, threshold: int, fuzzy_term: str | None = None
 ) -> str | None:
-    """
-    Prueft einen sender-Pattern gegen den Text.
-    1. Erst exaktes Regex/Substring (case-insensitive) — schnell & praezise.
-    2. Dann fuzzy (rapidfuzz partial_ratio ueber Zeilen), um OCR-Fehler zu fangen.
-
-    Fuzzy-Begriff (needle):
-      - explizites fuzzy_term aus der Config hat Vorrang;
-      - sonst nur, wenn 'pattern' ein reines Literal ist (keine Regex-Zeichen),
-        wird das Muster selbst als needle genutzt;
-      - bei Regex-Mustern OHNE fuzzy_term wird Fuzzy UEBERSPRUNGEN, damit kein
-        zerhacktes needle (z.B. "Garnishm[a-z]{0,3}" -> "Garnishmaz03") entsteht
-        und Zufallstreffer erzeugt.
-    Returns: gematchter Ausschnitt (str) oder None.
-    """
-    # 1) exaktes (Regex-)Match
     try:
         m = re.search(pattern, text, re.IGNORECASE)
     except re.error:
@@ -166,24 +117,18 @@ def _sender_match(
     if m:
         return m.group(0)
 
-    # 2) Fuzzy-Fallback (nur wenn rapidfuzz da ist)
     if _HAVE_RAPIDFUZZ:
-        # needle sauber bestimmen — NIE aus einem Regex ableiten.
         if fuzzy_term:
             needle = fuzzy_term.strip()
         elif not _has_regex_meta(pattern):
             needle = pattern.strip()
         else:
-            needle = ""  # Regex ohne expliziten fuzzy_term -> kein Fuzzy
+            needle = ""
         if needle:
             for line in text.splitlines():
                 line = line.strip()
                 if not line:
                     continue
-                # Zeilen, die deutlich kuerzer als das needle sind, koennen
-                # keine OCR-Variante davon sein (z.B. eine "g"-Zeile ist kein
-                # "Garnishment"). Das verhindert Zufallstreffer von
-                # partial_ratio gegen sehr kurze Fragmente.
                 if len(line) < len(needle) * 0.6:
                     continue
                 if fuzz.partial_ratio(needle.lower(), line.lower()) >= threshold:
@@ -192,7 +137,6 @@ def _sender_match(
 
 
 def _keyword_match(pattern: str, text: str) -> str | None:
-    """keywords: exaktes Regex/Substring-Match (case-insensitive). Kein Fuzzy."""
     try:
         m = re.search(pattern, text, re.IGNORECASE)
         if m:
@@ -204,39 +148,23 @@ def _keyword_match(pattern: str, text: str) -> str | None:
     return None
 
 
-# --------------------------------------------------------------------------- #
-# Kernfunktion
-# --------------------------------------------------------------------------- #
-def classify(extract: dict, cfg: RuleConfig) -> Klassifikation:
-    """
-    Klassifiziert EINEN Brief.
+def classify(extract: dict, cfg: RuleConfig) -> Classification:
+    sender = extract.get("sender", "") or ""
+    full_text = extract.get("full_text", "") or ""
+    recipient = extract.get("recipient", "") or ""
+    date = extract.get("date", "") or ""
+    file = extract.get("file") or extract.get("source", "") or ""
 
-    Args:
-        extract: dict aus pdf_extract (braucht 'absender', 'volltext';
-                 optional 'empfaenger', 'datum', 'datei'/'source').
-        cfg:     geladene RuleConfig.
-
-    Returns: Klassifikation (mit treffer-Liste und alle_scores fuer Transparenz).
-    """
-    absender = extract.get("absender", "") or ""
-    volltext = extract.get("volltext", "") or ""
-    empfaenger = extract.get("empfaenger", "") or ""
-    datum = extract.get("datum", "") or ""
-    datei = extract.get("datei") or extract.get("source", "") or ""
-
-    # Absender-Regeln pruefen primaer gegen das Absenderfeld, aber auch gegen
-    # den Volltext (falls die Kopfzeile schlecht extrahiert wurde, steht der
-    # Name oft trotzdem im Text).
-    sender_haystack = f"{absender}\n{volltext}"
+    sender_haystack = f"{sender}\n{full_text}"
 
     scores: dict[str, int] = {}
-    treffer_je_abt: dict[str, list[Treffer]] = {}
+    matches_by_dept: dict[str, list[Match]] = {}
 
     for dept in cfg.departments:
         name = dept.get("name", "?")
         rules = dept.get("rules", {}) or {}
         total = 0
-        hits: list[Treffer] = []
+        hits: list[Match] = []
 
         for rule in rules.get("senders", []) or []:
             pat, sc = rule.get("pattern", ""), int(rule.get("score", 0))
@@ -246,75 +174,68 @@ def classify(extract: dict, cfg: RuleConfig) -> Klassifikation:
             )
             if matched:
                 total += sc
-                hits.append(Treffer("sender", pat, sc, matched.strip()))
+                hits.append(Match("sender", pat, sc, matched.strip()))
 
         for rule in rules.get("keywords", []) or []:
             pat, sc = rule.get("pattern", ""), int(rule.get("score", 0))
-            matched = _keyword_match(pat, volltext)
+            matched = _keyword_match(pat, full_text)
             if matched:
                 total += sc
-                hits.append(Treffer("keyword", pat, sc, matched.strip()))
+                hits.append(Match("keyword", pat, sc, matched.strip()))
 
         scores[name] = total
-        treffer_je_abt[name] = hits
+        matches_by_dept[name] = hits
 
     fb = cfg.fallback
     fb_name = fb.get("department", "UNGEKLAERT")
-    fb_email = fb.get("email", "")
     min_score = int(fb.get("min_score", 0))
 
-    # Gewinner bestimmen
     ranked = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
-    base = Klassifikation(
-        datei=datei,
-        absender=absender,
-        empfaenger=empfaenger,
-        datum=datum,
-        abteilung=fb_name,
+    base = Classification(
+        file=file,
+        sender=sender,
+        recipient=recipient,
+        date=date,
+        department=fb_name,
         score=0,
-        alle_scores=scores,
+        all_scores=scores,
     )
 
     if not ranked or ranked[0][1] == 0:
-        base.auto_versand = False
-        base.grund = "kein Regeltreffer"
+        base.auto_send = False
+        base.reason = "no rule matched"
         return base
 
     top_name, top_score = ranked[0]
     base.score = top_score
-    base.treffer = treffer_je_abt.get(top_name, [])
+    base.matches = matches_by_dept.get(top_name, [])
 
-    # Fail-safe 1: Gleichstand
     if len(ranked) > 1 and ranked[1][1] == top_score:
-        base.auto_versand = False
-        base.grund = f"Gleichstand {top_name} vs. {ranked[1][0]} (je {top_score})"
+        base.auto_send = False
+        base.reason = f"tie {top_name} vs. {ranked[1][0]} (both {top_score})"
         return base
 
-    # Fail-safe 2: unter Mindest-Score
     if top_score < min_score:
-        base.auto_versand = False
-        base.grund = f"Score {top_score} < min_score {min_score}"
+        base.auto_send = False
+        base.reason = f"score {top_score} < min_score {min_score}"
         return base
 
-    # Auto-Versand an Gewinner-Abteilung
-    base.abteilung = top_name
-    base.auto_versand = True
+    base.department = top_name
+    base.auto_send = True
 
-    # Sub-Routing: wenn die Gewinner-Abteilung Subrouten definiert, muss eine
-    # sicher greifen — sonst -> review/ (kein blinder Versand an eine Adresse).
     winner_dept = None
     for d in cfg.departments:
         if d.get("name") == top_name:
             winner_dept = d
             break
-    if winner_dept and (winner_dept.get("subroutes")):
-        sr_name, sr_email, sr_hits, sr_grund = classify_subroute(
-            winner_dept, volltext, absender, cfg.fuzzy_threshold
+    if winner_dept and winner_dept.get("subroutes"):
+        sr_name, sr_email, sr_hits, sr_reason = classify_subroute(
+            winner_dept, full_text, sender, cfg.fuzzy_threshold
         )
-        base.subroute_treffer = sr_hits
+        base.subroute_matches = sr_hits
         if not sr_name:
-            base.auto_versand = False
-            base.grund = f"Subroute unklar ({sr_grund})"
+            base.auto_send = False
+            base.reason = f"subroute unclear ({sr_reason})"
             return base
         base.subroute = sr_name
         base.subroute_email = sr_email
@@ -322,72 +243,58 @@ def classify(extract: dict, cfg: RuleConfig) -> Klassifikation:
 
 
 def classify_subroute(
-    dept: dict, volltext: str, absender: str, fuzzy_threshold: int = 85
-) -> tuple[str, str, list[Treffer], str]:
-    """
-    Bestimmt die Subroute INNERHALB einer Abteilung anhand der Adresszeile.
-
-    Gleiche Scoring-Mechanik wie die Abteilungen: pro Subroute alle
-    patterns scoren, hoechster Score gewinnt. Fail-safe (-> ""), wenn:
-      - keine Subroute ueber subroute_min_score liegt, ODER
-      - Gleichstand zwischen zwei Subrouten besteht.
-
-    Returns: (subroute_name, subroute_email, treffer, grund)
-      subroute_name == "" bedeutet: keine sichere Subroute -> review/.
-    """
+    dept: dict, full_text: str, sender: str, fuzzy_threshold: int = 85
+) -> tuple[str, str, list[Match], str]:
     subroutes = dept.get("subroutes") or []
     if not subroutes:
-        return "", "", [], "keine Subrouten definiert"
+        return "", "", [], "no subroutes defined"
 
     min_score = int(dept.get("subroute_min_score", 0))
-    haystack = f"{absender}\n{volltext}"
+    haystack = f"{sender}\n{full_text}"
 
     scores: dict[str, int] = {}
-    treffer_je_sr: dict[str, list[Treffer]] = {}
-    email_je_sr: dict[str, str] = {}
+    matches_by_sr: dict[str, list[Match]] = {}
+    email_by_sr: dict[str, str] = {}
 
     for sr in subroutes:
         name = sr.get("name", "?")
-        email_je_sr[name] = sr.get("email", "")
+        email_by_sr[name] = sr.get("email", "")
         total = 0
-        hits: list[Treffer] = []
+        hits: list[Match] = []
         for rule in sr.get("patterns", []) or []:
             pat, sc = rule.get("pattern", ""), int(rule.get("score", 0))
             fuzzy_term = rule.get("fuzzy")
             matched = _sender_match(pat, haystack, fuzzy_threshold, fuzzy_term)
             if matched:
                 total += sc
-                hits.append(Treffer("subroute", pat, sc, matched.strip()))
+                hits.append(Match("subroute", pat, sc, matched.strip()))
         scores[name] = total
-        treffer_je_sr[name] = hits
+        matches_by_sr[name] = hits
 
     ranked = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
     if not ranked or ranked[0][1] == 0:
-        return "", "", [], "keine Subroute-Signale gefunden"
+        return "", "", [], "no subroute signal found"
 
     top_name, top_score = ranked[0]
-    # Gleichstand -> unsicher
     if len(ranked) > 1 and ranked[1][1] == top_score:
         return (
             "",
             "",
-            treffer_je_sr.get(top_name, []),
-            f"Gleichstand Subroute {top_name} vs. {ranked[1][0]} (je {top_score})",
+            matches_by_sr.get(top_name, []),
+            f"tie subroute {top_name} vs. {ranked[1][0]} (both {top_score})",
         )
-    # unter Mindest-Score -> unsicher
     if top_score < min_score:
         return (
             "",
             "",
-            treffer_je_sr.get(top_name, []),
-            f"Subroute-Score {top_score} < min {min_score}",
+            matches_by_sr.get(top_name, []),
+            f"subroute score {top_score} < min {min_score}",
         )
 
-    return top_name, email_je_sr.get(top_name, ""), treffer_je_sr.get(top_name, []), ""
+    return top_name, email_by_sr.get(top_name, ""), matches_by_sr.get(top_name, []), ""
 
 
 def department_by_name(cfg: RuleConfig, name: str) -> dict | None:
-    """Liefert den Abteilungs-Dict (fuer Router: email, templates) oder None."""
     for d in cfg.departments:
         if d.get("name") == name:
             return d
@@ -396,19 +303,14 @@ def department_by_name(cfg: RuleConfig, name: str) -> dict | None:
     return None
 
 
-# --------------------------------------------------------------------------- #
-# CLI — klassifiziert alle PDFs in einem Ordner (nutzt pdf_extract)
-# --------------------------------------------------------------------------- #
 def _main() -> None:
     import argparse
     import json
 
     from postpilot import pdf_extract
 
-    parser = argparse.ArgumentParser(
-        description="Brief-PDFs regelbasiert klassifizieren."
-    )
-    parser.add_argument("pdfs", nargs="+", help="PDF-Dateien oder Ordner")
+    parser = argparse.ArgumentParser(description="Classify letter PDFs by rules.")
+    parser.add_argument("pdfs", nargs="+", help="PDF files or folders")
     parser.add_argument("--config", default="config/departments.yaml")
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
@@ -428,11 +330,11 @@ def _main() -> None:
     for pdf in paths:
         ext = pdf_extract.extract(pdf)
         ext_d = {
-            "absender": ext.absender,
-            "volltext": ext.volltext,
-            "empfaenger": ext.empfaenger,
-            "datum": ext.datum,
-            "datei": ext.source,
+            "sender": ext.sender,
+            "full_text": ext.full_text,
+            "recipient": ext.recipient,
+            "date": ext.date,
+            "file": ext.source,
         }
         k = classify(ext_d, cfg)
         results.append(k.as_dict())

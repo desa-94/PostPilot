@@ -1,3 +1,15 @@
+"""Outlook integration via pywin32 (Windows).
+
+send_message() creates an Outlook mail with attachments: as a draft when
+dry_run=True (default, nothing leaves the machine), or sent when dry_run=False.
+
+fetch_pdf_attachments() reads new (unread) mails from a folder, saves their PDF
+attachments locally and returns one record per attachment (path, message id,
+subject). Mails are marked read only after their attachments were saved.
+
+Requires pywin32 (win32com.client); Windows with Outlook only.
+"""
+
 from __future__ import annotations
 
 import logging
@@ -6,57 +18,41 @@ from pathlib import Path
 
 log = logging.getLogger("postpilot.outlook_client")
 
-# Outlook-MailItem-Konstante
 _OL_MAIL_ITEM = 0
 
 
 def _get_outlook():
-    """Verbindet sich mit der laufenden/instanziierten Outlook-Applikation."""
     try:
-        import win32com.client  # lokaler Import: Modul laedt auch ohne pywin32
+        import win32com.client
     except ImportError as exc:  # pragma: no cover
         raise RuntimeError(
-            "pywin32 wird benoetigt: pip install pywin32 (nur Windows + Outlook)"
+            "pywin32 required: pip install pywin32 (Windows + Outlook only)"
         ) from exc
     return win32com.client.Dispatch("Outlook.Application")
 
 
 def _resolve_folder(namespace, folder_path: str):
-    """
-    Findet einen Outlook-Ordner anhand eines Pfades.
-
-    folder_path:
-      - "ScanToMe"                 -> sucht rekursiv im Standard-Posteingang
-      - "Posteingang/ScanToMe"     -> expliziter Pfad ab Postfach-Wurzel
-      - "Postfach/Posteingang/Sub" -> mit fuehrendem Postfachnamen
-
-    Returns den Folder oder wirft, wenn nicht gefunden (mit Hinweis).
-    """
     parts = [p for p in folder_path.replace("\\", "/").split("/") if p]
 
-    # Fall 1: einfacher Name -> rekursiv ab Standard-Posteingang suchen.
     if len(parts) == 1:
-        inbox = namespace.GetDefaultFolder(6)  # 6 = olFolderInbox
+        inbox = namespace.GetDefaultFolder(6)
         if inbox.Name.lower() == parts[0].lower():
             return inbox
         found = _find_subfolder(inbox, parts[0])
         if found is not None:
             return found
-        # Auch auf oberster Ebene des Standard-Stores suchen.
         try:
-            root = inbox.Parent  # Store-Root
+            root = inbox.Parent
             found = _find_subfolder(root, parts[0])
             if found is not None:
                 return found
         except Exception:
             pass
         raise RuntimeError(
-            f"Outlook-Ordner '{folder_path}' nicht gefunden. Tipp: expliziten "
-            f"Pfad angeben, z.B. 'Posteingang/{parts[0]}'."
+            f"Outlook folder '{folder_path}' not found. Tip: pass an explicit "
+            f"path, e.g. 'Inbox/{parts[0]}'."
         )
 
-    # Fall 2: expliziter Pfad -> Schritt fuer Schritt absteigen.
-    # Startpunkt: passt der erste Teil auf einen Store/Postfachnamen?
     current = None
     for store in namespace.Folders:
         if store.Name.lower() == parts[0].lower():
@@ -64,21 +60,19 @@ def _resolve_folder(namespace, folder_path: str):
             parts = parts[1:]
             break
     if current is None:
-        # Kein Postfachname vorangestellt -> ab Standard-Posteingang-Parent.
         current = namespace.GetDefaultFolder(6).Parent
 
     for part in parts:
         nxt = _find_subfolder(current, part, recursive=False)
         if nxt is None:
             raise RuntimeError(
-                f"Outlook-Ordner '{folder_path}' nicht gefunden (Teil '{part}' fehlt)."
+                f"Outlook folder '{folder_path}' not found (part '{part}' missing)."
             )
         current = nxt
     return current
 
 
 def _find_subfolder(folder, name: str, recursive: bool = True):
-    """Sucht einen Unterordner per Name (case-insensitive). None, wenn nicht da."""
     try:
         subfolders = folder.Folders
     except Exception:
@@ -95,15 +89,6 @@ def _find_subfolder(folder, name: str, recursive: bool = True):
 
 
 def list_all_folders(max_depth: int = 4) -> list[str]:
-    """
-    Listet alle Outlook-Ordner (ueber alle Postfaecher/Stores) als Pfade auf.
-
-    Diagnose-Helfer: zeigt die echten Ordnernamen, damit der richtige
-    folder_path fuer fetch_pdf_attachments gefunden werden kann (z.B. wenn
-    "ScanToMe" in einem freigegebenen/zweiten Postfach liegt).
-
-    Returns: Liste von Pfaden wie "Postfachname/Posteingang/ScanToMe".
-    """
     outlook = _get_outlook()
     namespace = outlook.GetNamespace("MAPI")
     paths: list[str] = []
@@ -131,7 +116,6 @@ def fetch_pdf_attachments(
     only_unread: bool = True,
     mark_read: bool = True,
 ) -> list[dict]:
-
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -141,28 +125,24 @@ def fetch_pdf_attachments(
     total = folder.Items.Count
 
     results: list[dict] = []
-    # Bei only_unread serverseitig filtern (Items.Restrict) statt alle Mails
-    # zu laden. Das ist bei grossen Ordnern (Tausende Mails) drastisch
-    # schneller — Outlook liefert nur die ungelesenen zurueck.
     if only_unread:
         try:
             filtered = folder.Items.Restrict("[UnRead] = True")
             items = list(filtered)
-            log.info("Lese Ordner '%s' (%d ungelesen von %d gesamt)",
-                     folder.Name, len(items), total)
+            log.info("reading '%s' (%d unread of %d total)", folder.Name, len(items), total)
         except Exception as exc:
-            log.warning("Restrict fehlgeschlagen (%s) — lese alle %d Elemente.", exc, total)
+            log.warning("Restrict failed (%s) - reading all %d items.", exc, total)
             items = list(folder.Items)
     else:
         items = list(folder.Items)
-        log.info("Lese Ordner '%s' (%d Elemente)", folder.Name, total)
+        log.info("reading '%s' (%d items)", folder.Name, total)
+
     for item in items:
-        # Nur echte Mails (olMail hat MessageClass IPM.Note*)
         try:
             if only_unread and not item.UnRead:
                 continue
         except Exception:
-            continue  # Nicht-Mail-Elemente (Termine o.ae.) ueberspringen
+            continue
 
         entry_id = getattr(item, "EntryID", "")
         subject = getattr(item, "Subject", "") or ""
@@ -175,7 +155,6 @@ def fetch_pdf_attachments(
                 fname = att.FileName or ""
                 if not fname.lower().endswith(".pdf"):
                     continue
-                # Eindeutiger lokaler Name: EntryID-Prefix gegen Kollisionen.
                 safe = f"{entry_id[:12]}_{fname}" if entry_id else fname
                 dest = out_dir / safe
                 counter = 1
@@ -193,9 +172,9 @@ def fetch_pdf_attachments(
                     }
                 )
                 saved_any = True
-                log.info("Anhang gespeichert: %s (Mail: %s)", dest.name, subject[:50])
+                log.info("saved attachment: %s (mail: %s)", dest.name, subject[:50])
         except Exception as exc:
-            log.warning("Fehler beim Lesen einer Mail '%s': %s", subject[:50], exc)
+            log.warning("error reading a mail '%s': %s", subject[:50], exc)
             continue
 
         if saved_any and mark_read:
@@ -203,9 +182,9 @@ def fetch_pdf_attachments(
                 item.UnRead = False
                 item.Save()
             except Exception as exc:  # pragma: no cover
-                log.warning("Konnte Mail nicht als gelesen markieren: %s", exc)
+                log.warning("could not mark mail as read: %s", exc)
 
-    log.info("ScanToMe: %d PDF-Anhang/Anhaenge gespeichert.", len(results))
+    log.info("fetch: %d PDF attachment(s) saved.", len(results))
     return results
 
 
@@ -217,20 +196,10 @@ def send_message(
     *,
     dry_run: bool = True,
 ) -> dict:
-    """
-    Erzeugt eine Mail mit Anhaengen.
-
-    dry_run=True  -> als Entwurf speichern (nichts geht raus). Default.
-    dry_run=False -> versenden.
-
-    Returns: dict mit Status (fuer Log/Report), wirft bei echten Fehlern.
-    """
     attachments = attachments or []
-    # Anhaenge vorab pruefen — fehlende Datei soll NICHT stillschweigend
-    # zu einer Mail ohne Anhang fuehren.
     missing = [str(a) for a in attachments if not Path(a).is_file()]
     if missing:
-        raise FileNotFoundError(f"Anhang fehlt: {missing}")
+        raise FileNotFoundError(f"attachment missing: {missing}")
 
     outlook = _get_outlook()
     mail = outlook.CreateItem(_OL_MAIL_ITEM)
@@ -240,15 +209,15 @@ def send_message(
     for a in attachments:
         mail.Attachments.Add(str(Path(a).resolve()))
 
-    action = "versendet" if not dry_run else "als Entwurf gespeichert"
+    status = "sent" if not dry_run else "draft"
     if dry_run:
-        mail.Save()  # landet im Entwuerfe-Ordner
+        mail.Save()
     else:
         mail.Send()
 
     log.info(
-        "Mail %s -> %s | Betreff: %s | Anhaenge: %d",
-        action,
+        "mail %s -> %s | subject: %s | attachments: %d",
+        status,
         to,
         subject,
         len(attachments),
@@ -258,42 +227,32 @@ def send_message(
         "subject": subject,
         "attachments": [str(a) for a in attachments],
         "dry_run": dry_run,
-        "status": action,
+        "status": status,
     }
 
 
-# --------------------------------------------------------------------------- #
-# Kleiner Selbsttest (nur manuell, erzeugt einen harmlosen Entwurf)
-# --------------------------------------------------------------------------- #
 def _main() -> None:
     import argparse
 
-    parser = argparse.ArgumentParser(description="Outlook-Testentwurf erzeugen.")
+    parser = argparse.ArgumentParser(description="Outlook helper (draft / fetch / list).")
     parser.add_argument(
         "--list-folders", action="store_true",
-        help="Alle Outlook-Ordner auflisten (Diagnose) und beenden.",
+        help="List all Outlook folders (diagnostic) and exit.",
     )
     parser.add_argument(
-        "--fetch",
-        metavar="OUTDIR",
-        help="Statt Entwurf: PDF-Anhaenge aus ScanToMe nach OUTDIR holen.",
+        "--fetch", metavar="OUTDIR",
+        help="Instead of a draft: fetch PDF attachments from the folder to OUTDIR.",
     )
-    parser.add_argument(
-        "--folder", default="ScanToMe", help="Outlook-Ordner (Default ScanToMe)"
-    )
-    parser.add_argument("--all", action="store_true", help="auch gelesene Mails holen")
-    parser.add_argument("--to", help="Empfaenger (nur fuer Entwurf/Versand noetig)")
+    parser.add_argument("--folder", default="ScanToMe", help="Outlook folder (default ScanToMe)")
+    parser.add_argument("--all", action="store_true", help="also fetch read mails")
+    parser.add_argument("--to", help="recipient (only needed for draft/send)")
     parser.add_argument("--subject", default="PostPilot Test")
-    parser.add_argument("--body", default="Testentwurf von PostPilot.")
+    parser.add_argument("--body", default="PostPilot test draft.")
     parser.add_argument("--attach", nargs="*", default=[])
-    parser.add_argument(
-        "--send", action="store_true", help="WIRKLICH senden (sonst Entwurf)"
-    )
+    parser.add_argument("--send", action="store_true", help="actually send (else draft)")
     args = parser.parse_args()
 
-    logging.basicConfig(
-        level=logging.INFO, format="%(levelname)s %(name)s: %(message)s"
-    )
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     if args.list_folders:
         for p in list_all_folders():
             print(p)
@@ -304,13 +263,11 @@ def _main() -> None:
         )
         for r in rows:
             print(r["pdf_path"])
-        print(f"\n{len(rows)} PDF-Anhang/Anhaenge gespeichert.")
+        print(f"\n{len(rows)} PDF attachment(s) saved.")
         return
     if not args.to:
-        parser.error("--to ist erforderlich (ausser bei --fetch)")
-    res = send_message(
-        args.to, args.subject, args.body, args.attach, dry_run=not args.send
-    )
+        parser.error("--to is required (except with --fetch)")
+    res = send_message(args.to, args.subject, args.body, args.attach, dry_run=not args.send)
     print(res)
 
 
