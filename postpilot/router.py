@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import logging
-import shutil
 from pathlib import Path
 
 from postpilot import pdf_extract, rule_engine
+from postpilot._fsutil import move_to_review
 from postpilot.rule_engine import Classification, RuleConfig
 
 log = logging.getLogger("postpilot.router")
@@ -52,18 +52,6 @@ def _render(template: str, k: Classification) -> str:
     return template.format_map(values)
 
 
-def _move_to_review(pdf: Path, review_dir: Path, reason: str) -> str:
-    review_dir.mkdir(parents=True, exist_ok=True)
-    dest = review_dir / pdf.name
-    counter = 1
-    while dest.exists():
-        dest = review_dir / f"{pdf.stem}__{counter}{pdf.suffix}"
-        counter += 1
-    shutil.copy2(pdf, dest)
-    log.warning("-> review/: %s (%s)", pdf.name, reason)
-    return str(dest)
-
-
 def route_one(
     pdf: str | Path,
     cfg: RuleConfig,
@@ -97,14 +85,14 @@ def route_one(
     if not k.auto_send:
         entry["action"] = "review"
         entry["reason"] = k.reason
-        entry["review_path"] = _move_to_review(pdf, Path(review_dir), k.reason)
+        entry["review_path"] = move_to_review(pdf, review_dir, k.reason, logger=log)
         return entry
 
     dept = rule_engine.department_by_name(cfg, k.department)
     if not dept or not dept.get("email"):
         entry["action"] = "review"
         entry["reason"] = f"no email address for department {k.department}"
-        entry["review_path"] = _move_to_review(pdf, Path(review_dir), entry["reason"])
+        entry["review_path"] = move_to_review(pdf, review_dir, entry["reason"], logger=log)
         return entry
 
     subject = _render(dept.get("subject_template", "Forwarding: {sender}"), k)
