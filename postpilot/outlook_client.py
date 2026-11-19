@@ -8,6 +8,10 @@ log = logging.getLogger("postpilot.outlook_client")
 
 _OL_MAIL_ITEM = 0
 
+# Outlook FlagStatus values (OlFlagStatus)
+_OL_FLAG_COMPLETE = 1  # green check mark
+_OL_FLAG_MARKED = 2  # red follow-up flag
+
 
 def _get_outlook():
     try:
@@ -176,6 +180,58 @@ def fetch_pdf_attachments(
 
     log.info("fetch: %d PDF attachment(s) saved.", len(results))
     return results
+
+
+def mark_message_complete(
+    entry_id: str,
+    *,
+    complete: bool = True,
+) -> bool:
+    """Turn a mail's follow-up flag into a green check mark (or back to red).
+
+    Resolves the mail by its EntryID and sets FlagStatus. Used to show
+    processing progress directly in Outlook: red flag = still open,
+    green check = processed cleanly.
+
+    Args:
+        entry_id: The mail's EntryID (captured during fetch).
+        complete: True -> green check (olFlagComplete). False -> red
+            follow-up flag (olFlagMarked).
+
+    Returns:
+        True if the flag was set, False otherwise (e.g. mail not found).
+    """
+    if not entry_id:
+        return False
+    try:
+        outlook = _get_outlook()
+        namespace = outlook.GetNamespace("MAPI")
+        item = namespace.GetItemFromID(entry_id)
+    except Exception as exc:
+        log.warning("could not resolve mail %s: %s", entry_id[:12], exc)
+        return False
+
+    try:
+        if complete:
+            item.FlagStatus = _OL_FLAG_COMPLETE
+            try:
+                from datetime import datetime
+
+                item.TaskCompletedDate = datetime.now()
+            except Exception:
+                pass  # TaskCompletedDate is optional / version-dependent
+        else:
+            item.FlagStatus = _OL_FLAG_MARKED
+        item.Save()
+        log.info(
+            "flag -> %s (mail: %s)",
+            "complete" if complete else "marked",
+            entry_id[:12],
+        )
+        return True
+    except Exception as exc:  # pragma: no cover
+        log.warning("could not set flag on mail %s: %s", entry_id[:12], exc)
+        return False
 
 
 def send_message(
