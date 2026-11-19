@@ -1,0 +1,43 @@
+[project]
+name = "postpilot"
+version = "0.1.0"
+description = "Rule-based letter forwarding: split batch scans at the incoming stamp, classify by rules (no LLM, no cloud), forward via Outlook/eml."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "PyMuPDF>=1.23",
+    "pdfplumber>=0.10",
+    "numpy>=1.24",
+    "Pillow>=10.0",
+    "rapidfuzz>=3.0",
+    "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+# Outlook sending (Windows only). On Linux/Mac the eml backend is used instead.
+outlook = ["pywin32>=306; sys_platform == 'win32'"]
+# OCR fallback for scans without a text layer (needs system Tesseract too).
+ocr = ["pytesseract>=0.3"]
+dev = [
+    "pytest>=8.0.0",
+    "ruff>=0.5.0",
+]
+
+[project.scripts]
+postpilot = "postpilot.__main__:_main"
+
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["postpilot*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
