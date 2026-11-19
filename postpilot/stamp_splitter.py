@@ -1,18 +1,25 @@
 from __future__ import annotations
 
 import logging
-import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
 
 try:
-    import fitz
+    # PyMuPDF >= 1.24 ships the `pymupdf` name; the old `fitz` alias emits a
+    # FutureWarning on import. Prefer `pymupdf`, fall back to `fitz` for
+    # older installs. Either way we keep the local name `fitz`.
+    import pymupdf as fitz
 except ImportError as exc:  # pragma: no cover
-    raise ImportError("PyMuPDF required: pip install PyMuPDF") from exc
+    try:
+        import fitz
+    except ImportError:
+        raise ImportError("PyMuPDF required: pip install PyMuPDF") from exc
 
 log = logging.getLogger("postpilot.stamp_splitter")
+
+from postpilot._fsutil import move_to_review
 
 
 @dataclass
@@ -25,7 +32,12 @@ class StampConfig:
     red_min: int = 90
     red_over_green: int = 45
     red_over_blue: int = 45
-    blue_thresh_pct: float = 0.15
+    # Blue frame of the "EINGEGANGEN" stamp. Kept at 0.10 (not higher):
+    # when the blue frame overlaps the black letterhead, blue ink over
+    # black pixels drops below b>blue_min, so the measured blue fraction
+    # falls to ~0.12-0.15. The red date (red_thresh_pct) stays the reliable
+    # discriminator; blue only guards against red-only seal artifacts.
+    blue_thresh_pct: float = 0.10
     red_thresh_pct: float = 0.02
     ambiguous_factor: float = 0.5
 
@@ -145,18 +157,6 @@ def group_pages_by_stamp_starts(
     return ranges
 
 
-def _move_to_review(pdf_path: Path, review_dir: Path, reason: str) -> str:
-    review_dir.mkdir(parents=True, exist_ok=True)
-    dest = review_dir / pdf_path.name
-    counter = 1
-    while dest.exists():
-        dest = review_dir / f"{pdf_path.stem}__{counter}{pdf_path.suffix}"
-        counter += 1
-    shutil.copy2(pdf_path, dest)
-    log.warning("fail-safe: '%s' -> review/ (%s)", pdf_path.name, reason)
-    return str(dest)
-
-
 def split_by_stamps(
     pdf_path: str | Path,
     out_dir: str | Path,
@@ -180,7 +180,7 @@ def split_by_stamps(
             False,
             reason,
             scans,
-            review_path=_move_to_review(pdf_path, review_dir, reason),
+            review_path=move_to_review(pdf_path, review_dir, reason, logger=log),
         )
 
     if not stamp_pages:
@@ -190,7 +190,7 @@ def split_by_stamps(
             False,
             reason,
             scans,
-            review_path=_move_to_review(pdf_path, review_dir, reason),
+            review_path=move_to_review(pdf_path, review_dir, reason, logger=log),
         )
 
     if scans[0].page not in stamp_pages:
@@ -200,7 +200,7 @@ def split_by_stamps(
             False,
             reason,
             scans,
-            review_path=_move_to_review(pdf_path, review_dir, reason),
+            review_path=move_to_review(pdf_path, review_dir, reason, logger=log),
         )
 
     if ambiguous_pages:
@@ -210,7 +210,7 @@ def split_by_stamps(
             False,
             reason,
             scans,
-            review_path=_move_to_review(pdf_path, review_dir, reason),
+            review_path=move_to_review(pdf_path, review_dir, reason, logger=log),
         )
 
     out_dir.mkdir(parents=True, exist_ok=True)
