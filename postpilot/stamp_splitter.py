@@ -40,6 +40,19 @@ class StampConfig:
     blue_thresh_pct: float = 0.10
     red_thresh_pct: float = 0.02
     ambiguous_factor: float = 0.5
+    # --- Yellow "Förmliche Zustellung" envelope detection ---------------
+    # Some incoming mail starts with a yellow Postzustellungsurkunde
+    # envelope (often scanned sideways), whose green-framed stamp cannot be
+    # found by the blue+red rule (no blue at all; the yellow paper floods
+    # the red mask). Instead we treat a strongly yellow page as its own
+    # document separator: high red AND high green AND clearly low blue,
+    # measured over the WHOLE page (the envelope fills it, orientation does
+    # not matter). A plain white letter page scores ~0% here, so the
+    # threshold is deliberately high.
+    yellow_min: int = 120
+    yellow_over_blue: int = 40
+    yellow_thresh_pct: float = 20.0
+    detect_yellow: bool = True
 
     @classmethod
     def from_dict(cls, d: dict | None) -> StampConfig:
@@ -62,8 +75,10 @@ class PageScan:
     page: int
     blue_pct: float
     red_pct: float
+    yellow_pct: float
     is_stamp: bool
     ambiguous: bool
+    is_envelope: bool = False
 
 
 @dataclass
@@ -99,6 +114,21 @@ def _color_fractions(roi: np.ndarray, cfg: StampConfig) -> tuple[float, float]:
     return float(100.0 * blue.sum() / total), float(100.0 * red.sum() / total)
 
 
+def _yellow_fraction(arr: np.ndarray, cfg: StampConfig) -> float:
+    """Fraction of strongly yellow pixels over the WHOLE page.
+
+    Yellow = high red AND high green AND clearly lower blue. Used to flag
+    the yellow Postzustellungsurkunde envelope, which starts a new
+    document. Measured full-page (not ROI) so a sideways scan still counts.
+    """
+    r = arr[:, :, 0].astype(int)
+    g = arr[:, :, 1].astype(int)
+    b = arr[:, :, 2].astype(int)
+    yellow = (r > cfg.yellow_min) & (g > cfg.yellow_min) & (r - b > cfg.yellow_over_blue) & (g - b > cfg.yellow_over_blue)
+    total = arr.shape[0] * arr.shape[1]
+    return 0.0 if total == 0 else float(100.0 * yellow.sum() / total)
+
+
 def _roi_slice(arr: np.ndarray, cfg: StampConfig) -> np.ndarray:
     h, w = arr.shape[0], arr.shape[1]
     x0, y0, x1, y1 = cfg.roi_frac
@@ -131,18 +161,23 @@ def detect_stamp_pages(
             roi = _roi_slice(arr, cfg)
             blue_pct, red_pct = _color_fractions(roi, cfg)
             is_stamp, ambiguous = _classify_page(blue_pct, red_pct, cfg)
+            yellow_pct = _yellow_fraction(arr, cfg) if cfg.detect_yellow else 0.0
+            is_envelope = cfg.detect_yellow and yellow_pct >= cfg.yellow_thresh_pct
             scans.append(
                 PageScan(
-                    i + 1, round(blue_pct, 4), round(red_pct, 4), is_stamp, ambiguous
+                    i + 1, round(blue_pct, 4), round(red_pct, 4),
+                    round(yellow_pct, 4), is_stamp, ambiguous, is_envelope
                 )
             )
             log.debug(
-                "p.%d blue=%.3f%% red=%.3f%% stamp=%s ambig=%s",
+                "p.%d blue=%.3f%% red=%.3f%% yellow=%.3f%% stamp=%s ambig=%s env=%s",
                 i + 1,
                 blue_pct,
                 red_pct,
+                yellow_pct,
                 is_stamp,
                 ambiguous,
+                is_envelope,
             )
     return scans
 
@@ -171,7 +206,11 @@ def split_by_stamps(
     scans = detect_stamp_pages(pdf_path, cfg)
     total = len(scans)
     stamp_pages = [s.page for s in scans if s.is_stamp]
+    envelope_pages = [s.page for s in scans if s.is_envelope]
     ambiguous_pages = [s.page for s in scans if s.ambiguous]
+
+    # A new document starts at a blue+red stamp OR a yellow envelope page.
+    start_pages = sorted(set(stamp_pages) | set(envelope_pages))
 
     if total == 0:
         reason = "PDF has no pages"
@@ -183,8 +222,8 @@ def split_by_stamps(
             review_path=move_to_review(pdf_path, review_dir, reason, logger=log),
         )
 
-    if not stamp_pages:
-        reason = "no incoming stamp detected"
+    if not start_pages:
+        reason = "no incoming stamp or envelope detected"
         return SplitResult(
             str(pdf_path),
             False,
@@ -193,8 +232,8 @@ def split_by_stamps(
             review_path=move_to_review(pdf_path, review_dir, reason, logger=log),
         )
 
-    if scans[0].page not in stamp_pages:
-        reason = f"first page without stamp (first stamp on p.{stamp_pages[0]})"
+    if scans[0].page not in start_pages:
+        reason = f"first page without stamp/envelope (first on p.{start_pages[0]})"
         return SplitResult(
             str(pdf_path),
             False,
@@ -214,7 +253,7 @@ def split_by_stamps(
         )
 
     out_dir.mkdir(parents=True, exist_ok=True)
-    ranges = group_pages_by_stamp_starts(stamp_pages, total)
+    ranges = group_pages_by_stamp_starts(start_pages, total)
     letters: list[dict] = []
     with fitz.open(pdf_path) as src:
         for idx, (start, end) in enumerate(ranges, 1):
